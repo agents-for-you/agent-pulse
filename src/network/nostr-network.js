@@ -98,11 +98,48 @@ export class NostrNetwork {
   _safeJsonParse(str) {
     try {
       const obj = JSON.parse(str)
-      // Detect prototype pollution
+      // Comprehensive prototype pollution detection
       if (obj && typeof obj === 'object') {
-        if (obj.__proto__ !== Object.prototype ||
-            (obj.constructor && obj.constructor.prototype !== Object.prototype)) {
-          log.warn('Prototype pollution detected in JSON')
+        // Check direct prototype pollution
+        if (obj.__proto__ !== Object.prototype) {
+          log.warn('Prototype pollution detected: __proto__ modified')
+          return null
+        }
+
+        // Check constructor prototype pollution
+        if (obj.constructor && obj.constructor.prototype !== Object.prototype) {
+          log.warn('Prototype pollution detected: constructor.prototype modified')
+          return null
+        }
+
+        // Check for dangerous prototype pollution keys
+        const dangerousKeys = ['__proto__', 'constructor', 'prototype']
+        for (const key of Object.keys(obj)) {
+          if (dangerousKeys.includes(key)) {
+            log.warn('Prototype pollution attempt detected', { key })
+            return null
+          }
+        }
+
+        // Deep check nested objects (recursive, limited depth)
+        const POLLUTION_MAX_DEPTH = 5
+        const checkNested = (o, depth = 0) => {
+          if (depth > POLLUTION_MAX_DEPTH) return true
+          if (!o || typeof o !== 'object') return true
+
+          for (const key of Object.keys(o)) {
+            if (dangerousKeys.includes(key)) {
+              log.warn('Nested prototype pollution detected', { key, depth })
+              return false
+            }
+            if (!checkNested(o[key], depth + 1)) {
+              return false
+            }
+          }
+          return true
+        }
+
+        if (!checkNested(obj)) {
           return null
         }
       }

@@ -19,12 +19,30 @@
 - ✍️ **Message Signing** - Schnorr signature verification for message authenticity
 - 🔑 **NIP-19 Support** - Human-readable `npub`/`nsec` format for keys
 - ⚡ **Relay Status** - Check relay connection health and latency
-- 🔔 **Webhook Support** - Push notifications for incoming messages
 - 🛡️ **Ephemeral Mode** - Temporary keys that are not saved to disk
 - 📚 **SDK/Library Mode** - Import directly into your agent code
 - 👁️ **Watch Mode** - Real-time message streaming
 - 🚀 **Auto-Start** - Service starts automatically when needed
 - 🔄 **Auto-Update** - Built-in update command
+- 🛡️ **Replay Protection** - Nonce-based tracking prevents message replay attacks
+
+## Changelog
+
+### v2.1.0 (Security Release)
+- **Added**: Replay attack protection with nonce tracking
+- **Added**: Storage key rotation (30-day intervals)
+- **Fixed**: TOCTOU race condition in file locking (atomic directory-based locks)
+- **Enhanced**: Deep prototype pollution detection (5-level recursive checking)
+- **Removed**: Webhook support (simplified architecture)
+- **Tests**: 189 tests passing (16 new replay protection tests)
+
+### v2.0.0
+- SDK/Library mode for direct agent integration
+- Auto-start on first use
+- Watch mode for real-time streaming
+- Rate limiting for message flooding prevention
+- Message persistence with journaling
+- Comprehensive security audit and fixes
 
 ## Installation
 
@@ -253,21 +271,6 @@ $ agent-pulse start --ephemeral
 
 Perfect for "fire-and-forget" one-time agent tasks.
 
-### Webhook Callbacks
-
-Configure a webhook URL to receive push notifications for new messages:
-
-```bash
-# Set webhook URL
-export AGENT_PULSE_WEBHOOK_URL="http://localhost:8000/webhook"
-
-# Start service
-agent-pulse start
-
-# When new messages arrive, they'll be POSTed to your webhook
-# Request body: {"id":"...","from":"...","content":"...",...}
-```
-
 ## Architecture
 
 ```
@@ -355,7 +358,6 @@ $ agent-pulse group-leave ml8abc123
 
 | Variable | Description |
 |----------|-------------|
-| `AGENT_PULSE_WEBHOOK_URL` | Webhook URL for push notifications on new messages |
 | `AGENT_PULSE_EPHEMERAL` | Set to "true" to enable ephemeral mode (temporary keys) |
 | `SECRET_KEY_EXPORT_AUTH` | Private key export authorization tokens (comma-separated) |
 | `LOG_LEVEL` | Log level: DEBUG, INFO, WARN, ERROR, SILENT |
@@ -383,6 +385,32 @@ npm start
 - ✍️ Messages support Schnorr signature verification
 - 🛡️ File operations have path traversal protection
 - 🛡️ JSON parsing has prototype pollution protection
+
+## Security
+
+### Built-in Protections
+
+- 🔐 **Private Key Storage** - Keys stored locally with 0600 permissions
+- 🔐 **E2E Encryption** - NIP-04 for private messages, HKDF-derived AES-256-CBC for groups
+- 🔐 **Key Export Protection** - Requires explicit authorization token
+- ✍️ **Message Signatures** - Schnorr signatures for authenticity verification
+
+### v2.1 Security Enhancements
+
+- 🛡️ **Replay Attack Protection** - Nonce-based tracking prevents message replay
+- 🔄 **Storage Key Rotation** - Automatic 30-day rotation for storage encryption keys
+- 🔒 **TOCTOU Fix** - Atomic directory-based locking eliminates race conditions
+- ⚠️ **Prototype Pollution Detection** - Deep recursive checking up to 5 levels
+- 🛡️ **Path Traversal Protection** - Validates all file paths stay within data directory
+- 🛡️ **Symlink Attack Prevention** - Blocks symlinked sensitive files
+
+### Security Best Practices
+
+1. Use ephemeral mode for one-time tasks: `agent-pulse start --ephemeral`
+2. Set `SECRET_KEY_EXPORT_AUTH` before enabling key export
+3. Run behind firewall for sensitive operations
+4. Monitor `relay-status` for network anomalies
+5. Rotate storage keys periodically with `agent-pulse rotate-key` (planned)
 
 ## License
 

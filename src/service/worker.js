@@ -22,6 +22,7 @@ import {
 import { verifyMessageSignature, createSignedMessage } from '../core/message-signature.js';
 import { groupManager } from './group-manager.js';
 import { messageQueue } from './message-queue.js';
+import { getReplayProtection, ReplayProtection } from '../utils/replay-protection.js';
 
 let network = null;
 let identity = null;
@@ -35,6 +36,9 @@ const groupKeys = new Map(); // topic -> { key, iv_prefix }
 
 // Message deduplication cache
 const processedMessages = new LRUCache(CONFIG.DEDUP_CACHE_SIZE);
+
+// Replay protection instance
+const replayProtection = getReplayProtection();
 
 // ============ Group encryption ============
 
@@ -110,6 +114,7 @@ function decryptGroupMessage(topic, ciphertext) {
 /**
  * Save received message (with deduplication and rotation, supports decryption and signature verification)
  * Includes rate limiting to prevent message flooding
+ * Includes replay protection to prevent duplicate message processing
  */
 async function saveMessage(msg) {
   // Rate limiting check (per sender)
@@ -122,7 +127,25 @@ async function saveMessage(msg) {
     return; // Drop the message
   }
 
-  // Deduplication check
+  // Replay protection check using nonce
+  const msgTimestamp = msg.ts || (msg.created_at ? msg.created_at * 1000 : Date.now());
+  const msgNonce = msg.id || ReplayProtection.createMessageNonce(
+    msg.content || '',
+    msg.pubkey,
+    msgTimestamp
+  );
+
+  const replayCheck = replayProtection.checkNonce(msgNonce, msgTimestamp);
+  if (!replayCheck.allowed) {
+    logger.warn(`[Worker] Message rejected: ${replayCheck.reason}`, {
+      nonce: msgNonce.slice(0, 8) + '...',
+      from: msg.pubkey.slice(0, 8) + '...'
+    });
+    stats.replayRejected++;
+    return; // Drop the replayed message
+  }
+
+  // Deduplication check (legacy - kept for backward compatibility)
   const msgId = msg.id || `${msg.pubkey}-${msg.created_at}`;
   if (processedMessages.has(msgId)) {
     logger.debug(`[Worker] Skip duplicate message: ${msgId.slice(0, 8)}...`);
@@ -198,44 +221,8 @@ async function saveMessage(msg) {
 
     stats.messagesReceived++;
     logger.info(`[Worker] Received message: ${msgId.slice(0, 8)}...`);
-
-    // Send webhook notification if configured
-    await sendWebhook(record);
   } catch (err) {
     logger.error(`[Worker] Failed to save message: ${err.message}`);
-  }
-}
-
-/**
- * Send webhook notification for new message
- * @param {Object} message - Message to send
- */
-async function sendWebhook(message) {
-  const webhookUrl = process.env.AGENT_PULSE_WEBHOOK_URL;
-  if (!webhookUrl) {
-    return; // Webhook not configured
-  }
-
-  try {
-    const response = await fetch(webhookUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'User-Agent': 'AgentPulse/1.0'
-      },
-      body: JSON.stringify(message),
-      // Timeout after 5 seconds
-      signal: AbortSignal.timeout(5000)
-    });
-
-    if (response.ok) {
-      logger.debug(`[Worker] Webhook sent successfully: ${message.id?.slice(0, 8)}...`);
-    } else {
-      logger.warn(`[Worker] Webhook returned status ${response.status}`);
-    }
-  } catch (err) {
-    // Don't fail if webhook fails, just log it
-    logger.debug(`[Worker] Webhook delivery failed: ${err.message}`);
   }
 }
 
@@ -484,6 +471,7 @@ const stats = {
   commandsProcessed: 0,
   errors: 0,
   rateLimitedMessages: 0,
+  replayRejected: 0,
   startTime: Date.now()
 };
 
@@ -510,7 +498,9 @@ function updateHealth() {
       commandsProcessed: stats.commandsProcessed,
       errors: stats.errors,
       rateLimitedMessages: stats.rateLimitedMessages,
+      replayRejected: stats.replayRejected,
       processedCacheSize: processedMessages.size,
+      replayCacheSize: replayProtection.getStats().cacheSize,
       groupCount: groupSubscriptions.size,
       pendingQueueSize: pendingMessages.length
     },

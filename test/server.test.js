@@ -65,7 +65,7 @@ describe('Server Module', () => {
 
       // Only test pubkey validation when service is running
       if (isRunning()) {
-        const result = sendMessage('abc', 'hello')
+        const result = await sendMessage('abc', 'hello', { autoStart: false })
         assert.strictEqual(result.ok, false)
         assert.strictEqual(result.code, 'INVALID_PUBKEY')
       }
@@ -75,7 +75,7 @@ describe('Server Module', () => {
       const { sendMessage, isRunning } = await importServer()
 
       if (isRunning()) {
-        const result = sendMessage('g'.repeat(64), 'hello')
+        const result = await sendMessage('g'.repeat(64), 'hello', { autoStart: false })
         assert.strictEqual(result.ok, false)
         assert.strictEqual(result.code, 'INVALID_PUBKEY')
       }
@@ -86,7 +86,7 @@ describe('Server Module', () => {
 
       if (!isRunning()) {
         const validPubkey = 'a'.repeat(64)
-        const result = sendMessage(validPubkey, 'hello')
+        const result = await sendMessage(validPubkey, 'hello', { autoStart: false })
         assert.strictEqual(result.ok, false)
         assert.strictEqual(result.code, 'SERVICE_NOT_RUNNING')
       }

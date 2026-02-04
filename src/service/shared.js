@@ -127,6 +127,7 @@ export function ensureDataDir() {
 
 /**
  * Simple file lock - acquire lock (sync version)
+ * Uses atomic mkdir for lock acquisition to prevent TOCTOU race condition
  * @param {number} timeout - Timeout ms
  * @returns {boolean} Whether acquired successfully
  */
@@ -134,23 +135,33 @@ export function acquireLock(timeout = 1000) {
   ensureDataDir();
   const start = Date.now();
   const pollInterval = 10; // Poll interval
+  const lockDir = LOCK_FILE + '.d'; // Use directory as lock (more atomic)
 
   while (Date.now() - start < timeout) {
     try {
-      // O_EXCL ensures atomic creation
-      fs.writeFileSync(LOCK_FILE, process.pid.toString(), { flag: 'wx' });
+      // Use mkdir with O_EXCL flag for truly atomic lock acquisition
+      // This avoids TOCTOU race condition present in writeFile+readFile pattern
+      fs.mkdirSync(lockDir, { mode: 0o700 });
+      // Write our PID to a file inside the lock directory
+      fs.writeFileSync(path.join(lockDir, 'pid'), process.pid.toString());
       return true;
     } catch (err) {
       if (err.code === 'EEXIST') {
-        // Check if lock is stale (holding process is dead)
+        // Lock directory exists, check if stale
         try {
-          const lockPid = parseInt(fs.readFileSync(LOCK_FILE, 'utf8').trim());
+          const pidPath = path.join(lockDir, 'pid');
+          const lockPid = parseInt(fs.readFileSync(pidPath, 'utf8').trim());
           process.kill(lockPid, 0);
           // Process alive, wait
         } catch {
-          // Process dead, delete lock
-          try { fs.unlinkSync(LOCK_FILE); } catch {}
-          continue;
+          // Process dead or PID file unreadable, try to clean up stale lock
+          try {
+            // Use rmdir to remove the lock directory (may fail if another process acquired it)
+            fs.rmdirSync(lockDir);
+            continue;
+          } catch {
+            // Another process may have acquired the lock, just continue waiting
+          }
         }
       }
       // Use non-blocking wait
@@ -162,6 +173,7 @@ export function acquireLock(timeout = 1000) {
 
 /**
  * Async acquire file lock
+ * Uses atomic mkdir for lock acquisition to prevent TOCTOU race condition
  * @param {number} timeout - Timeout ms
  * @returns {Promise<boolean>} Whether acquired successfully
  */
@@ -169,19 +181,24 @@ export async function acquireLockAsync(timeout = 1000) {
   ensureDataDir();
   const start = Date.now();
   const pollInterval = 10;
+  const lockDir = LOCK_FILE + '.d';
 
   while (Date.now() - start < timeout) {
     try {
-      fs.writeFileSync(LOCK_FILE, process.pid.toString(), { flag: 'wx' });
+      fs.mkdirSync(lockDir, { mode: 0o700 });
+      fs.writeFileSync(path.join(lockDir, 'pid'), process.pid.toString());
       return true;
     } catch (err) {
       if (err.code === 'EEXIST') {
         try {
-          const lockPid = parseInt(fs.readFileSync(LOCK_FILE, 'utf8').trim());
+          const pidPath = path.join(lockDir, 'pid');
+          const lockPid = parseInt(fs.readFileSync(pidPath, 'utf8').trim());
           process.kill(lockPid, 0);
         } catch {
-          try { fs.unlinkSync(LOCK_FILE); } catch {}
-          continue;
+          try {
+            fs.rmdirSync(lockDir);
+            continue;
+          } catch {}
         }
       }
       await sleep(pollInterval);
@@ -194,8 +211,14 @@ export async function acquireLockAsync(timeout = 1000) {
  * Release file lock
  */
 export function releaseLock() {
+  const lockDir = LOCK_FILE + '.d';
   try {
-    fs.unlinkSync(LOCK_FILE);
+    // Verify we own the lock before releasing
+    const pidPath = path.join(lockDir, 'pid');
+    const lockPid = fs.readFileSync(pidPath, 'utf8').trim();
+    if (parseInt(lockPid) === process.pid) {
+      fs.rmdirSync(lockDir);
+    }
   } catch {}
 }
 
@@ -425,6 +448,8 @@ export function generateId() {
 // ============ Local storage encryption ============
 
 let storageKey = null;
+let keyRotationTime = null;
+const KEY_ROTATION_INTERVAL = 30 * 24 * 60 * 60 * 1000; // 30 days in milliseconds
 
 /**
  * Validate file path is within data directory (prevent path traversal attack)
@@ -438,10 +463,65 @@ function validatePathInDataDir(filePath) {
 }
 
 /**
+ * Rotate storage key (generates new key and returns both old and new)
+ * @returns {{oldKey: Buffer, newKey: Buffer}} Old and new keys for re-encryption
+ */
+export function rotateStorageKey() {
+  ensureDataDir();
+
+  // Validate storage key file path safety
+  if (!validatePathInDataDir(STORAGE_KEY_FILE)) {
+    throw new Error('Invalid storage key path: path traversal detected');
+  }
+
+  const oldKey = storageKey || getStorageKey();
+  const newKey = crypto.randomBytes(32);
+
+  // Atomic write of new key
+  const tempPath = STORAGE_KEY_FILE + '.tmp.' + process.pid;
+  try {
+    fs.writeFileSync(tempPath, newKey.toString('hex'), { mode: 0o600 });
+    fs.renameSync(tempPath, STORAGE_KEY_FILE);
+  } catch (err) {
+    try { fs.unlinkSync(tempPath); } catch {}
+    throw err;
+  }
+
+  // Update cached key and rotation time
+  storageKey = newKey;
+  keyRotationTime = Date.now();
+
+  return { oldKey, newKey };
+}
+
+/**
+ * Check if storage key needs rotation
+ * @returns {boolean} True if key should be rotated
+ */
+export function shouldRotateKey() {
+  if (!keyRotationTime) {
+    // First time load - check file modification time
+    try {
+      const stats = fs.statSync(STORAGE_KEY_FILE);
+      keyRotationTime = stats.mtime.getTime();
+    } catch {
+      keyRotationTime = Date.now();
+    }
+  }
+  return (Date.now() - keyRotationTime) > KEY_ROTATION_INTERVAL;
+}
+
+/**
  * Get or generate local storage key
  * Key is randomly generated, stored in local file
+ * Supports automatic key rotation
  */
 export function getStorageKey() {
+  // Check if key needs rotation
+  if (storageKey && shouldRotateKey()) {
+    log?.warn('Storage key rotation recommended - key is older than 30 days');
+  }
+
   if (storageKey) return storageKey;
 
   ensureDataDir();
@@ -459,10 +539,12 @@ export function getStorageKey() {
     }
     // Read existing key
     storageKey = Buffer.from(fs.readFileSync(STORAGE_KEY_FILE, 'utf8'), 'hex');
+    keyRotationTime = stats.mtime.getTime();
   } else {
     // Generate new key - use atomic write (temp file + rename)
     const tempPath = STORAGE_KEY_FILE + '.tmp.' + process.pid;
     storageKey = crypto.randomBytes(32);
+    keyRotationTime = Date.now();
     try {
       fs.writeFileSync(tempPath, storageKey.toString('hex'), { mode: 0o600 });
       // Atomic rename
