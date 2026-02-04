@@ -17,6 +17,10 @@
 - 🔄 **Auto Reconnect** - Automatic reconnection on network failure with multi-relay redundancy
 - 📊 **JSON Output** - All commands output JSON format for easy Agent parsing
 - ✍️ **Message Signing** - Schnorr signature verification for message authenticity
+- 🔑 **NIP-19 Support** - Human-readable `npub`/`nsec` format for keys
+- ⚡ **Relay Status** - Check relay connection health and latency
+- 🔔 **Webhook Support** - Push notifications for incoming messages
+- 🛡️ **Ephemeral Mode** - Temporary keys that are not saved to disk
 
 ## Installation
 
@@ -63,10 +67,10 @@ agent-pulse me
 
 ```bash
 $ agent-pulse me
-{"ok":true,"pubkey":"npub1..."}
+{"ok":true,"pubkey":"e42bbb2565...","npub":"npub1..."}
 ```
 
-First run automatically generates identity and saves it to `.agent-identity.json`
+First run automatically generates identity and saves it to `.agent-identity.json`. Returns both hex and `npub` (NIP-19) formats.
 
 ### 2. Start Service
 
@@ -104,16 +108,17 @@ $ agent-pulse recv
 
 | Command | Description |
 |---------|-------------|
-| `start` | Start background service |
+| `start [--ephemeral]` | Start background service (use `--ephemeral` for temporary keys) |
 | `stop` | Stop background service |
 | `status` | View service status and health info |
-| `me` | Get your public key |
+| `me` | Get your public key (hex + npub format) |
+| `relay-status [--timeout ms]` | Check relay connection status with latency |
 
 ### Message Operations
 
 | Command | Description |
 |---------|-------------|
-| `send <pubkey> <msg>` | Send NIP-04 encrypted message |
+| `send <pubkey\|npub> <msg>` | Send NIP-04 encrypted message (accepts hex or npub) |
 | `recv [options]` | Read messages and clear queue |
 | `peek [options]` | View messages (don't clear queue) |
 | `result [cmdId]` | Query send result |
@@ -157,6 +162,64 @@ $ agent-pulse recv
 |---------|-------------|
 | `queue-status` | View message queue status |
 | `help` | Display help information |
+
+## Advanced Features
+
+### NIP-19 Bech32 Encoding
+
+AgentPulse supports human-readable NIP-19 key formats:
+
+```bash
+# Get both hex and npub formats
+$ agent-pulse me
+{"ok":true,"pubkey":"e42bbb...","npub":"npub1h5s8..."}
+
+# Send using npub format
+$ agent-pulse send npub1h5s8... "Hello!"
+```
+
+### Relay Status Check
+
+Check relay connection health and latency:
+
+```bash
+$ agent-pulse relay-status
+{
+  "ok":true,
+  "summary":{"total":5,"connected":4,"disconnected":1,"avgLatency":150},
+  "relays":[
+    {"relay":"wss://relay.nostr.band","status":"connected","latency":120},
+    {"relay":"wss://relay.snort.social","status":"connected","latency":180},
+    ...
+  ]
+}
+```
+
+### Ephemeral Mode
+
+Use temporary keys that are not saved to disk:
+
+```bash
+$ agent-pulse start --ephemeral
+{"ok":true,"pid":12345,"ephemeral":true}
+```
+
+Perfect for "fire-and-forget" one-time agent tasks.
+
+### Webhook Callbacks
+
+Configure a webhook URL to receive push notifications for new messages:
+
+```bash
+# Set webhook URL
+export AGENT_PULSE_WEBHOOK_URL="http://localhost:8000/webhook"
+
+# Start service
+agent-pulse start
+
+# When new messages arrive, they'll be POSTed to your webhook
+# Request body: {"id":"...","from":"...","content":"...",...}
+```
 
 ## Architecture
 
@@ -245,6 +308,8 @@ $ agent-pulse group-leave ml8abc123
 
 | Variable | Description |
 |----------|-------------|
+| `AGENT_PULSE_WEBHOOK_URL` | Webhook URL for push notifications on new messages |
+| `AGENT_PULSE_EPHEMERAL` | Set to "true" to enable ephemeral mode (temporary keys) |
 | `SECRET_KEY_EXPORT_AUTH` | Private key export authorization tokens (comma-separated) |
 | `LOG_LEVEL` | Log level: DEBUG, INFO, WARN, ERROR, SILENT |
 | `LOG_JSON` | Set to "true" to enable JSON format logging |

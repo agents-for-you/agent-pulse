@@ -8,6 +8,7 @@ import { getPublicKey } from 'nostr-tools'
 import { readJson, writeJson } from './storage.js'
 import { DEFAULT_IDENTITY_FILE } from '../config/defaults.js'
 import { logger } from '../utils/logger.js'
+import * as nip19 from './nip19.js'
 
 const log = logger.child('identity')
 
@@ -127,10 +128,25 @@ export function loadOrCreateIdentity(identityFile = DEFAULT_IDENTITY_FILE) {
 /**
  * Get public key of identity
  * @param {Identity} identity - Identity object
- * @returns {string} Public key hexadecimal string
+ * @param {Object} [options] - Options
+ * @param {boolean} [options.npub=false] - Return npub format instead of hex
+ * @returns {string} Public key (hexadecimal or npub)
  */
-export function getIdentityPublicKey(identity) {
-  return identity.publicKey
+export function getIdentityPublicKey(identity, options = {}) {
+  const hexKey = identity.publicKey
+  if (options?.npub) {
+    return nip19.encodePublicKey(hexKey)
+  }
+  return hexKey
+}
+
+/**
+ * Get public key in npub format
+ * @param {Identity} identity - Identity object
+ * @returns {string} Public key in npub (Bech32) format
+ */
+export function getIdentityPublicKeyNpub(identity) {
+  return nip19.encodePublicKey(identity.publicKey)
 }
 
 /**
@@ -169,4 +185,42 @@ export function exportSecretKey(identity, options = {}) {
     auth: providedAuth.substring(0, 4) + '***' // Only log first 4 characters
   })
   return toHex(identity.secretKey)
+}
+
+/**
+ * Export private key in nsec format (Bech32)
+ * Requires authorization token to execute
+ * @param {Identity} identity - Identity object
+ * @param {Object} options - Options
+ * @param {string} [options.authorization] - Authorization token
+ * @returns {string} Private key in nsec (Bech32) format
+ * @throws {Error} If unauthorized
+ */
+export function exportSecretKeyNsec(identity, options = {}) {
+  // Check authorization token
+  const envAuth = process.env.SECRET_KEY_EXPORT_AUTH
+  if (!envAuth) {
+    log.error('Secret key export disabled - no authorization tokens configured')
+    throw new Error('Unauthorized: secret key export is not configured')
+  }
+
+  const authTokens = envAuth.split(',').map(t => t.trim()).filter(Boolean)
+  if (authTokens.length === 0) {
+    throw new Error('Unauthorized: no valid authorization tokens configured')
+  }
+
+  const providedAuth = options.authorization
+  if (!providedAuth || !authTokens.includes(providedAuth)) {
+    log.error('Unauthorized attempt to export secret key', {
+      timestamp: Date.now(),
+      hasAuth: !!providedAuth
+    })
+    throw new Error('Unauthorized: secret key export requires valid authorization token')
+  }
+
+  log.warn('Exporting secret key (nsec) - authorized operation', {
+    timestamp: Date.now(),
+    auth: providedAuth.substring(0, 4) + '***'
+  })
+  return nip19.encodeSecretKey(identity.secretKey)
 }

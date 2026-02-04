@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Agent P2P CLI - Minimalist design
+ * AgentPulse CLI - Minimalist design
  * All outputs are JSON format for easy Agent parsing
  */
 import {
@@ -26,14 +26,46 @@ import {
   transferGroupOwnership,
   getGroupHistory,
   sendGroupMessage,
-  getMessageQueueStatus
+  getMessageQueueStatus,
+  getRelayStatus
 } from './service/server.js';
-import { loadOrCreateIdentity } from './core/identity.js';
+import { loadOrCreateIdentity, getIdentityPublicKeyNpub } from './core/identity.js';
 import { ErrorCode } from './service/shared.js';
+import * as nip19 from './core/nip19.js';
 
 // JSON output
 function out(data) {
   console.log(JSON.stringify(data));
+}
+
+/**
+ * Normalize public key input - accepts npub, nsec, or hex format
+ * @param {string} input - Public key (npub, hex, or nsec for private key operations)
+ * @param {'public'|'private'} [keyType='public'] - Key type
+ * @returns {string} Normalized hex public key
+ */
+function normalizePubkey(input, keyType = 'public') {
+  if (!input) return input;
+
+  // Detect npub/nsec format using NIP-19
+  if (input.startsWith('npub')) {
+    if (keyType !== 'public') {
+      throw new Error('Key type mismatch: npub is a public key format');
+    }
+    return nip19.decodePublicKey(input);
+  }
+
+  if (input.startsWith('nsec')) {
+    if (keyType === 'public') {
+      throw new Error('Key type mismatch: nsec is a private key format');
+    }
+    // For nsec, we need to derive the public key
+    // This is handled by the identity module
+    throw new Error('nsec format not supported for this command');
+  }
+
+  // Assume hex format (will be validated by downstream functions)
+  return input;
 }
 
 // Parse message filter options (with input validation)
@@ -53,9 +85,11 @@ function parseMessageOptions(args) {
 
     switch (arg) {
       case '--from':
-        // Validate public key format (64-character hex)
-        if (/^[0-9a-fA-F]{64}$/.test(next)) {
-          options.from = next;
+        // Accept npub or hex format
+        try {
+          options.from = normalizePubkey(next, 'public');
+        } catch {
+          // Invalid format, skip
         }
         i++;
         break;
@@ -109,8 +143,10 @@ function parseMessageOptions(args) {
 // Command definitions
 const commands = {
   // Start background service
-  async start() {
-    const result = await start();
+  async start(args) {
+    // Check for --ephemeral flag
+    const ephemeral = args.includes('--ephemeral');
+    const result = await start({ ephemeral });
     out(result);
   },
 
@@ -125,11 +161,12 @@ const commands = {
     out(getStatus());
   },
 
-  // Get own public key
+  // Get own public key (returns both hex and npub format)
   me() {
     try {
       const identity = loadOrCreateIdentity();
-      out({ ok: true, pubkey: identity.publicKey });
+      const npub = getIdentityPublicKeyNpub(identity);
+      out({ ok: true, pubkey: identity.publicKey, npub });
     } catch (err) {
       out({ ok: false, code: ErrorCode.INTERNAL_ERROR, error: err.message });
     }
@@ -149,17 +186,22 @@ const commands = {
     out({ ok: true, count: messages.length, messages });
   },
 
-  // Send message: send <pubkey> <message>
+  // Send message: send <pubkey|npub> <message>
   send(args) {
     const [target, ...rest] = args;
     const content = rest.join(' ');
 
     if (!target || !content) {
-      out({ ok: false, code: ErrorCode.INVALID_ARGS, error: 'usage: send <pubkey> <message>' });
+      out({ ok: false, code: ErrorCode.INVALID_ARGS, error: 'usage: send <pubkey|npub> <message>' });
       return;
     }
 
-    out(sendMessage(target, content));
+    try {
+      const normalizedTarget = normalizePubkey(target, 'public');
+      out(sendMessage(normalizedTarget, content));
+    } catch (err) {
+      out({ ok: false, code: ErrorCode.INVALID_PUBKEY, error: err.message });
+    }
   },
 
   // Query send result: result <cmdId>
@@ -180,15 +222,16 @@ const commands = {
   help() {
     out({
       commands: {
-        start: 'Start background service',
+        start: 'start [--ephemeral] - Start background service (use --ephemeral for temporary keys)',
         stop: 'Stop background service',
         status: 'View service status (including health info)',
-        me: 'Get own public key',
+        me: 'Get own public key (hex + npub format)',
         recv: 'recv [options] - Read messages (and clear queue)',
         peek: 'peek [options] - View messages (don\'t clear queue)',
-        send: 'send <pubkey> <message> - Send encrypted message',
+        send: 'send <pubkey|npub> <message> - Send encrypted message',
         result: 'result [cmdId] - Query send result',
         'queue-status': 'View message queue status (pending/retry messages)',
+        'relay-status': 'relay-status [--timeout ms] - Check relay connection status with latency',
         // Group commands
         groups: 'List all groups',
         'group-create': 'group-create <name> - Create group',
@@ -276,76 +319,111 @@ const commands = {
     out(getGroupMembers(groupId));
   },
 
-  // Kick member: group-kick <groupId> <pubkey>
+  // Kick member: group-kick <groupId> <pubkey|npub>
   'group-kick'(args) {
     const [groupId, pubkey] = args;
     if (!groupId || !pubkey) {
-      out({ ok: false, code: ErrorCode.INVALID_ARGS, error: 'usage: group-kick <groupId> <pubkey>' });
+      out({ ok: false, code: ErrorCode.INVALID_ARGS, error: 'usage: group-kick <groupId> <pubkey|npub>' });
       return;
     }
-    out(kickGroupMember(groupId, pubkey));
+    try {
+      const normalizedPubkey = normalizePubkey(pubkey, 'public');
+      out(kickGroupMember(groupId, normalizedPubkey));
+    } catch (err) {
+      out({ ok: false, code: ErrorCode.INVALID_PUBKEY, error: err.message });
+    }
   },
 
-  // Ban member: group-ban <groupId> <pubkey>
+  // Ban member: group-ban <groupId> <pubkey|npub>
   'group-ban'(args) {
     const [groupId, pubkey] = args;
     if (!groupId || !pubkey) {
-      out({ ok: false, code: ErrorCode.INVALID_ARGS, error: 'usage: group-ban <groupId> <pubkey>' });
+      out({ ok: false, code: ErrorCode.INVALID_ARGS, error: 'usage: group-ban <groupId> <pubkey|npub>' });
       return;
     }
-    out(banGroupMember(groupId, pubkey));
+    try {
+      const normalizedPubkey = normalizePubkey(pubkey, 'public');
+      out(banGroupMember(groupId, normalizedPubkey));
+    } catch (err) {
+      out({ ok: false, code: ErrorCode.INVALID_PUBKEY, error: err.message });
+    }
   },
 
-  // Unban member: group-unban <groupId> <pubkey>
+  // Unban member: group-unban <groupId> <pubkey|npub>
   'group-unban'(args) {
     const [groupId, pubkey] = args;
     if (!groupId || !pubkey) {
-      out({ ok: false, code: ErrorCode.INVALID_ARGS, error: 'usage: group-unban <groupId> <pubkey>' });
+      out({ ok: false, code: ErrorCode.INVALID_ARGS, error: 'usage: group-unban <groupId> <pubkey|npub>' });
       return;
     }
-    out(unbanGroupMember(groupId, pubkey));
+    try {
+      const normalizedPubkey = normalizePubkey(pubkey, 'public');
+      out(unbanGroupMember(groupId, normalizedPubkey));
+    } catch (err) {
+      out({ ok: false, code: ErrorCode.INVALID_PUBKEY, error: err.message });
+    }
   },
 
-  // Mute member: group-mute <groupId> <pubkey> [duration]
+  // Mute member: group-mute <groupId> <pubkey|npub> [duration]
   'group-mute'(args) {
     const [groupId, pubkey, durationStr] = args;
     if (!groupId || !pubkey) {
-      out({ ok: false, code: ErrorCode.INVALID_ARGS, error: 'usage: group-mute <groupId> <pubkey> [duration]' });
+      out({ ok: false, code: ErrorCode.INVALID_ARGS, error: 'usage: group-mute <groupId> <pubkey|npub> [duration]' });
       return;
     }
-    const duration = durationStr ? parseInt(durationStr, 10) : 3600; // Default 1 hour
-    out(muteGroupMember(groupId, pubkey, duration));
+    try {
+      const normalizedPubkey = normalizePubkey(pubkey, 'public');
+      const duration = durationStr ? parseInt(durationStr, 10) : 3600; // Default 1 hour
+      out(muteGroupMember(groupId, normalizedPubkey, duration));
+    } catch (err) {
+      out({ ok: false, code: ErrorCode.INVALID_PUBKEY, error: err.message });
+    }
   },
 
-  // Unmute member: group-unmute <groupId> <pubkey>
+  // Unmute member: group-unmute <groupId> <pubkey|npub>
   'group-unmute'(args) {
     const [groupId, pubkey] = args;
     if (!groupId || !pubkey) {
-      out({ ok: false, code: ErrorCode.INVALID_ARGS, error: 'usage: group-unmute <groupId> <pubkey>' });
+      out({ ok: false, code: ErrorCode.INVALID_ARGS, error: 'usage: group-unmute <groupId> <pubkey|npub>' });
       return;
     }
-    out(unmuteGroupMember(groupId, pubkey));
+    try {
+      const normalizedPubkey = normalizePubkey(pubkey, 'public');
+      out(unmuteGroupMember(groupId, normalizedPubkey));
+    } catch (err) {
+      out({ ok: false, code: ErrorCode.INVALID_PUBKEY, error: err.message });
+    }
   },
 
-  // Set admin: group-admin <groupId> <pubkey> <true|false>
+  // Set admin: group-admin <groupId> <pubkey|npub> <true|false>
   'group-admin'(args) {
     const [groupId, pubkey, isAdminStr] = args;
     if (!groupId || !pubkey || !isAdminStr) {
-      out({ ok: false, code: ErrorCode.INVALID_ARGS, error: 'usage: group-admin <groupId> <pubkey> <true|false>' });
+      out({ ok: false, code: ErrorCode.INVALID_ARGS, error: 'usage: group-admin <groupId> <pubkey|npub> <true|false>' });
       return;
     }
-    const isAdmin = isAdminStr === 'true';
-    out(setGroupAdmin(groupId, pubkey, isAdmin));
+    try {
+      const normalizedPubkey = normalizePubkey(pubkey, 'public');
+      const isAdmin = isAdminStr === 'true';
+      out(setGroupAdmin(groupId, normalizedPubkey, isAdmin));
+    } catch (err) {
+      out({ ok: false, code: ErrorCode.INVALID_PUBKEY, error: err.message });
+    }
   },
 
-  // Transfer ownership: group-transfer <groupId> <pubkey>
+  // Transfer ownership: group-transfer <groupId> <pubkey|npub>
   'group-transfer'(args) {
     const [groupId, pubkey] = args;
     if (!groupId || !pubkey) {
-      out({ ok: false, code: ErrorCode.INVALID_ARGS, error: 'usage: group-transfer <groupId> <pubkey>' });
+      out({ ok: false, code: ErrorCode.INVALID_ARGS, error: 'usage: group-transfer <groupId> <pubkey|npub>' });
       return;
     }
-    out(transferGroupOwnership(groupId, pubkey));
+    try {
+      const normalizedPubkey = normalizePubkey(pubkey, 'public');
+      out(transferGroupOwnership(groupId, normalizedPubkey));
+    } catch (err) {
+      out({ ok: false, code: ErrorCode.INVALID_PUBKEY, error: err.message });
+    }
   },
 
   // View group message history: group-history <groupId> [limit]
@@ -362,6 +440,28 @@ const commands = {
   // View message queue status
   'queue-status'() {
     out(getMessageQueueStatus());
+  },
+
+  // ============ Relay status ============
+
+  // Check relay connection status with latency
+  async 'relay-status'(args) {
+    // Parse timeout option
+    let timeout = 5000;
+    const timeoutIndex = args.indexOf('--timeout');
+    if (timeoutIndex !== -1 && args[timeoutIndex + 1]) {
+      const parsed = parseInt(args[timeoutIndex + 1], 10);
+      if (!isNaN(parsed) && parsed > 0) {
+        timeout = parsed;
+      }
+    }
+
+    try {
+      const result = await getRelayStatus({ timeout });
+      out(result);
+    } catch (err) {
+      out({ ok: false, code: ErrorCode.INTERNAL_ERROR, error: err.message });
+    }
   }
 };
 

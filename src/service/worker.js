@@ -8,7 +8,7 @@ import fs from 'fs';
 import crypto from 'crypto';
 import * as nip04 from 'nostr-tools/nip04';
 import { NostrNetwork } from '../network/nostr-network.js';
-import { loadOrCreateIdentity } from '../core/identity.js';
+import { loadOrCreateIdentity, generateIdentity } from '../core/identity.js';
 import { DEFAULT_RELAYS, DEFAULT_TOPIC } from '../config/defaults.js';
 import { logger } from '../utils/logger.js';
 import {
@@ -185,8 +185,44 @@ async function saveMessage(msg) {
 
     stats.messagesReceived++;
     logger.info(`[Worker] Received message: ${msgId.slice(0, 8)}...`);
+
+    // Send webhook notification if configured
+    await sendWebhook(record);
   } catch (err) {
     logger.error(`[Worker] Failed to save message: ${err.message}`);
+  }
+}
+
+/**
+ * Send webhook notification for new message
+ * @param {Object} message - Message to send
+ */
+async function sendWebhook(message) {
+  const webhookUrl = process.env.AGENT_PULSE_WEBHOOK_URL;
+  if (!webhookUrl) {
+    return; // Webhook not configured
+  }
+
+  try {
+    const response = await fetch(webhookUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'User-Agent': 'AgentPulse/1.0'
+      },
+      body: JSON.stringify(message),
+      // Timeout after 5 seconds
+      signal: AbortSignal.timeout(5000)
+    });
+
+    if (response.ok) {
+      logger.debug(`[Worker] Webhook sent successfully: ${message.id?.slice(0, 8)}...`);
+    } else {
+      logger.warn(`[Worker] Webhook returned status ${response.status}`);
+    }
+  } catch (err) {
+    // Don't fail if webhook fails, just log it
+    logger.debug(`[Worker] Webhook delivery failed: ${err.message}`);
   }
 }
 
@@ -592,8 +628,14 @@ async function main() {
 
   logger.info(`[Worker] Starting... PID: ${process.pid}`);
 
-  // Load identity
-  identity = loadOrCreateIdentity();
+  // Load identity (use ephemeral mode if flag is set)
+  const isEphemeral = process.env.AGENT_PULSE_EPHEMERAL === 'true';
+  if (isEphemeral) {
+    identity = generateIdentity();
+    logger.info(`[Worker] Using ephemeral identity (not saved to disk)`);
+  } else {
+    identity = loadOrCreateIdentity();
+  }
   const myPubkey = identity.publicKey;
 
   logger.info(`[Worker] Public key: ${myPubkey}`);

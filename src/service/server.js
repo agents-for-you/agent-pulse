@@ -38,9 +38,11 @@ export function isRunning() {
 
 /**
  * Start background service
+ * @param {Object} options - Start options
+ * @param {boolean} [options.ephemeral] - Use ephemeral keys (not saved to disk)
  * @returns {Promise<Object>} Start result
  */
-export async function start() {
+export async function start(options = {}) {
   if (isRunning()) {
     return { ok: false, code: ErrorCode.SERVICE_ALREADY_RUNNING };
   }
@@ -48,10 +50,16 @@ export async function start() {
   ensureDataDir();
 
   const serverScript = path.join(__dirname, 'worker.js');
+  const env = { ...process.env };
+  if (options.ephemeral) {
+    env.AGENT_PULSE_EPHEMERAL = 'true';
+  }
+
   const child = spawn('node', [serverScript], {
     detached: true,
     stdio: 'ignore',
-    cwd: path.join(__dirname, '../..')
+    cwd: path.join(__dirname, '../..'),
+    env
   });
 
   child.unref();
@@ -62,7 +70,7 @@ export async function start() {
     await new Promise(r => setTimeout(r, CONFIG.START_POLL_INTERVAL));
     const pid = isRunning();
     if (pid) {
-      return { ok: true, pid };
+      return { ok: true, pid, ephemeral: !!options.ephemeral };
     }
   }
 
@@ -526,4 +534,96 @@ export function sendGroupMessage(groupId, content, senderPubkey = '') {
  */
 export function getMessageQueueStatus() {
   return { ok: true, ...messageQueue.getStatus() };
+}
+
+// ============ Relay status ============
+
+/**
+ * Check relay connection status with latency
+ * @param {string[]} relays - Relay list to check
+ * @param {number} timeout - Connection timeout per relay (ms)
+ * @returns {Promise<Array>} Relay status list
+ */
+async function checkRelayStatus(relays, timeout = 5000) {
+  const WebSocket = (await import('ws')).default;
+  const results = [];
+
+  for (const relay of relays) {
+    const startTime = Date.now();
+    let status = 'disconnected';
+    let latency = null;
+    let error = null;
+
+    try {
+      await new Promise((resolve, reject) => {
+        const ws = new WebSocket(relay);
+        const timer = setTimeout(() => {
+          ws.close();
+          reject(new Error('Timeout'));
+        }, timeout);
+
+        ws.on('open', () => {
+          clearTimeout(timer);
+          latency = Date.now() - startTime;
+          status = 'connected';
+          ws.close();
+          resolve();
+        });
+
+        ws.on('error', (err) => {
+          clearTimeout(timer);
+          error = err.message;
+          reject(err);
+        });
+
+        ws.on('close', () => {
+          clearTimeout(timer);
+        });
+      });
+    } catch (err) {
+      status = 'error';
+      error = error || err.message;
+    }
+
+    results.push({
+      relay,
+      status,
+      latency,
+      error
+    });
+  }
+
+  return results;
+}
+
+/**
+ * Get relay status with latency check
+ * @param {Object} options - Options
+ * @param {string[]} [options.relays] - Custom relay list
+ * @param {number} [options.timeout] - Connection timeout
+ * @returns {Promise<Object>} Relay status result
+ */
+export async function getRelayStatus(options = {}) {
+  const { DEFAULT_RELAYS } = await import('../config/defaults.js');
+  const relays = options.relays || DEFAULT_RELAYS;
+  const timeout = options.timeout || 5000;
+
+  const results = await checkRelayStatus(relays, timeout);
+
+  // Calculate summary
+  const connected = results.filter(r => r.status === 'connected').length;
+  const avgLatency = connected > 0
+    ? Math.round(results.filter(r => r.latency !== null).reduce((sum, r) => sum + r.latency, 0) / connected)
+    : null;
+
+  return {
+    ok: true,
+    summary: {
+      total: results.length,
+      connected,
+      disconnected: results.length - connected,
+      avgLatency
+    },
+    relays: results
+  };
 }
