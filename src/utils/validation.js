@@ -3,6 +3,8 @@
  * Centralized validation for all user inputs to prevent security issues
  */
 
+import path from 'path'
+import fs from 'fs'
 import { logger } from './logger.js'
 
 const log = logger.child('validation')
@@ -129,8 +131,6 @@ export function validateFilePath(filePath, allowedDir) {
     return { valid: false, error: 'File path is required' }
   }
 
-  const path = (await import('path')).default
-
   try {
     const resolvedPath = path.resolve(filePath)
     const resolvedAllowed = path.resolve(allowedDir)
@@ -141,7 +141,6 @@ export function validateFilePath(filePath, allowedDir) {
     }
 
     // Check for symlink attacks
-    const fs = (await import('fs')).default
     try {
       const stats = fs.lstatSync(resolvedPath)
       if (stats.isSymbolicLink()) {
