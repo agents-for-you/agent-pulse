@@ -1,0 +1,43 @@
+{
+  "name": "agent-pulse",
+  "version": "1.0.0",
+  "description": "Nostr-based decentralized P2P communication runtime for AI Agents - supports end-to-end encrypted messaging, group chat, and message queuing",
+  "type": "module",
+  "main": "index.js",
+  "bin": {
+    "agent-pulse": "./index.js"
+  },
+  "scripts": {
+    "start": "node index.js",
+    "test": "node --test test/**/*.test.js",
+    "test:watch": "node --test --watch test/**/*.test.js"
+  },
+  "keywords": [
+    "nostr",
+    "p2p",
+    "agent",
+    "ai",
+    "decentralized",
+    "e2e",
+    "encryption",
+    "communication",
+    "message-queue"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "nostr-tools": "^2.23.0",
+    "ws": "^8.19.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agents-for-you/agent-pulse.git"
+  },
+  "homepage": "https://github.com/agents-for-you/agent-pulse#readme",
+  "bugs": {
+    "url": "https://github.com/agents-for-you/agent-pulse/issues"
+  },
+  "author": "AgentPulse Contributors"
+}
