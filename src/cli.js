@@ -249,8 +249,66 @@ const commands = {
     out({ ok: true, count: messages.length, messages });
   },
 
+  // Watch for new messages in real-time (streaming JSON lines)
+  async watch(args) {
+    const options = parseMessageOptions(args);
+
+    // Parse watch-specific options
+    let count = 0;
+    let maxCount = Infinity;
+    const countIndex = args.indexOf('--count');
+    if (countIndex !== -1 && args[countIndex + 1]) {
+      maxCount = parseInt(args[countIndex + 1], 10) || Infinity;
+    }
+
+    // Ensure service is running
+    const { isRunning: runningCheck, start } = await import('./service/server.js');
+    if (!runningCheck()) {
+      const progress = showProgress('Starting service for watch mode');
+      const started = await start();
+      progress.stop(started.ok ? 'Service started' : 'Failed to start');
+      if (!started.ok) {
+        out(started);
+        return;
+      }
+      // Wait for service to be ready
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+
+    out({ ok: true, watching: true, message: 'Streaming messages (Ctrl+C to stop)...' });
+
+    // Poll for new messages
+    const interval = setInterval(async () => {
+      const messages = readMessages(false, options);
+      if (messages.length > 0) {
+        for (const msg of messages) {
+          count++;
+          if (count <= maxCount) {
+            // Output as JSON lines for streaming
+            console.log(JSON.stringify({ ...msg, _stream: true }));
+          }
+        }
+        // Clear after processing
+        readMessages(true, options);
+
+        if (count >= maxCount) {
+          clearInterval(interval);
+          console.log(JSON.stringify({ _done: true, totalProcessed: count }));
+          process.exit(0);
+        }
+      }
+    }, 1000);
+
+    // Handle Ctrl+C gracefully
+    process.on('SIGINT', () => {
+      clearInterval(interval);
+      console.log(JSON.stringify({ _done: true, totalProcessed: count }));
+      process.exit(0);
+    });
+  },
+
   // Send message: send <pubkey|npub> <message>
-  send(args) {
+  async send(args) {
     const [target, ...rest] = args;
     const content = rest.join(' ');
 
@@ -261,7 +319,8 @@ const commands = {
 
     try {
       const normalizedTarget = normalizePubkey(target, 'public');
-      out(sendMessage(normalizedTarget, content));
+      const result = await sendMessage(normalizedTarget, content, { autoStart: true });
+      out(result);
     } catch (err) {
       out({ ok: false, code: ErrorCode.INVALID_PUBKEY, error: err.message });
     }
@@ -291,6 +350,7 @@ const commands = {
         me: 'Get own public key (hex + npub format)',
         recv: 'recv [options] - Read messages (and clear queue)',
         peek: 'peek [options] - View messages (don\'t clear queue)',
+        watch: 'watch [options] [--count N] - Stream messages in real-time',
         send: 'send <pubkey|npub> <message> - Send encrypted message',
         result: 'result [cmdId] - Query send result',
         'queue-status': 'View message queue status (pending/retry messages)',

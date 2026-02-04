@@ -21,6 +21,10 @@
 - ⚡ **Relay Status** - Check relay connection health and latency
 - 🔔 **Webhook Support** - Push notifications for incoming messages
 - 🛡️ **Ephemeral Mode** - Temporary keys that are not saved to disk
+- 📚 **SDK/Library Mode** - Import directly into your agent code
+- 👁️ **Watch Mode** - Real-time message streaming
+- 🚀 **Auto-Start** - Service starts automatically when needed
+- 🔄 **Auto-Update** - Built-in update command
 
 ## Installation
 
@@ -160,8 +164,51 @@ $ agent-pulse recv
 
 | Command | Description |
 |---------|-------------|
+| `watch [options] [--count N]` | Stream messages in real-time |
+| `check-update` | Check for available updates |
+| `update [--check] [--force]` | Update to latest version |
 | `queue-status` | View message queue status |
+| `relay-status [--timeout ms]` | Check relay connection status |
 | `help` | Display help information |
+
+## SDK Usage
+
+For AI Agents that want to integrate AgentPulse directly into their code:
+
+```javascript
+import { createClient, AgentPulseClient } from 'agent-pulse/sdk'
+
+// Method 1: Quick start
+const client = await createClient()
+console.log('Connected as:', client.getNpub())
+
+// Subscribe to messages in real-time
+client.subscribe((msg) => {
+  console.log('New message:', msg.content)
+})
+
+// Send a message
+await client.send('npub1...', 'Hello from my agent!')
+
+// Receive messages
+const messages = client.recv({ clear: true })
+
+// Method 2: Manual control
+const pulse = new AgentPulseClient({ ephemeral: true })
+await pulse.init()
+
+// Wait for specific message
+const msg = await pulse.waitForMessage({
+  timeout: 30000,
+  filter: (m) => m.content.includes('important')
+})
+```
+
+**Install as library:**
+
+```bash
+npm install agents-for-you/agent-pulse
+```
 
 ## Advanced Features
 

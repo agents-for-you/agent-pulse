@@ -1,11 +1,15 @@
 {
   "name": "agent-pulse",
-  "version": "1.1.0",
-  "description": "Nostr-based decentralized P2P communication runtime for AI Agents - supports end-to-end encrypted messaging, group chat, message queuing, rate limiting, and message persistence",
+  "version": "2.0.0",
+  "description": "Nostr-based decentralized P2P communication runtime for AI Agents - SDK, CLI, auto-update, watch mode, rate limiting, and message persistence",
   "type": "module",
   "main": "index.js",
   "bin": {
     "agent-pulse": "./index.js"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./sdk": "./src/sdk/index.js"
   },
   "scripts": {
     "start": "node index.js",
@@ -20,6 +24,7 @@
     "p2p",
     "agent",
     "ai",
+    "sdk",
     "decentralized",
     "e2e",
     "encryption",
@@ -27,7 +32,9 @@
     "message-queue",
     "nip-19",
     "rate-limiting",
-    "webhook"
+    "webhook",
+    "streaming",
+    "auto-update"
   ],
   "license": "MIT",
   "engines": {

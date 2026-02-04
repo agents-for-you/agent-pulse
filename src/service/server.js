@@ -13,6 +13,9 @@ import {
 } from './shared.js';
 import { groupManager } from './group-manager.js';
 import { messageQueue } from './message-queue.js';
+import { logger } from '../utils/logger.js';
+
+const log = logger.child('server');
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -35,6 +38,28 @@ export function isRunning() {
 }
 
 // ============ Service control ============
+
+/**
+ * Ensure service is running (auto-start if not running)
+ * @param {Object} options - Start options
+ * @param {boolean} [options.ephemeral] - Use ephemeral keys
+ * @param {boolean} [options.autoStart=true] - Auto-start if not running
+ * @returns {Promise<Object>} Status
+ */
+export async function ensureRunning(options = {}) {
+  const { autoStart = true } = options
+
+  if (isRunning()) {
+    return { ok: true, running: true, autoStarted: false }
+  }
+
+  if (!autoStart) {
+    return { ok: false, running: false, code: ErrorCode.SERVICE_NOT_RUNNING }
+  }
+
+  log.info('Service not running, auto-starting...')
+  return await start(options)
+}
 
 /**
  * Start background service
@@ -224,18 +249,42 @@ export function readMessages(clear = false, options = {}) {
 }
 
 /**
- * Send message to specified target
+ * Send message to specified target (auto-starts service if needed)
  * @param {string} targetPubkey - Target public key
  * @param {string} content - Message content
- * @returns {Object} Send result
+ * @param {Object} options - Options
+ * @param {boolean} [options.autoStart=true] - Auto-start service
+ * @returns {Promise<Object>} Send result
  */
-export function sendMessage(targetPubkey, content) {
+export async function sendMessage(targetPubkey, content, options = {}) {
+  const { autoStart = true } = options
+
+  // Auto-start if not running
   if (!isRunning()) {
-    return { ok: false, code: ErrorCode.SERVICE_NOT_RUNNING };
+    if (!autoStart) {
+      return { ok: false, code: ErrorCode.SERVICE_NOT_RUNNING };
+    }
+    const started = await ensureRunning()
+    if (!started.ok) {
+      return started
+    }
+    // Wait for service to be ready
+    await sleep(500)
+  }
+
+  // Normalize npub to hex if needed
+  let target = targetPubkey
+  if (targetPubkey.startsWith('npub')) {
+    try {
+      const { decodePublicKey } = await import('../core/nip19.js')
+      target = decodePublicKey(targetPubkey)
+    } catch (err) {
+      return { ok: false, code: ErrorCode.INVALID_PUBKEY, error: 'Invalid npub format' }
+    }
   }
 
   // Validate public key format
-  if (!targetPubkey || !/^[0-9a-f]{64}$/i.test(targetPubkey)) {
+  if (!target || !/^[0-9a-f]{64}$/i.test(target)) {
     return { ok: false, code: ErrorCode.INVALID_PUBKEY };
   }
 
@@ -243,7 +292,7 @@ export function sendMessage(targetPubkey, content) {
   const command = {
     id: cmdId,
     type: 'send',
-    target: targetPubkey,
+    target: target,
     content: content,
     timestamp: Date.now()
   };
