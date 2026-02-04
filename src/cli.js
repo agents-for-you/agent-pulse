@@ -33,6 +33,8 @@ import { loadOrCreateIdentity, getIdentityPublicKeyNpub } from './core/identity.
 import { ErrorCode } from './service/shared.js';
 import * as nip19 from './core/nip19.js';
 import * as updater from './utils/updater.js';
+import { createErrorResponse, createSuccessResponse, ErrorCodes } from './utils/error-reporter.js';
+import { compressIfNeeded, decodeCompressed } from './utils/performance.js';
 
 // JSON output
 function out(data) {
@@ -60,29 +62,50 @@ function showProgress(message) {
 }
 
 /**
- * Format error with suggestion
+ * Format error with enhanced reporting
  * @param {string} code - Error code
  * @param {string} error - Error message
- * @returns {Object} Enhanced error response
+ * @returns {Object} Enhanced error response with suggestions
  */
 function formatError(code, error) {
-  const response = { ok: false, code, error };
-
-  // Add suggestions for common errors
-  const suggestions = {
-    SERVICE_NOT_RUNNING: 'Start the service with: agent-pulse start',
-    SERVICE_ALREADY_RUNNING: 'Check status with: agent-pulse status or stop with: agent-pulse stop',
-    SERVICE_START_FAILED: 'Check if port is in use or run with --ephemeral for testing',
-    NETWORK_DISCONNECTED: 'Check relay status with: agent-pulse relay-status',
-    INVALID_PUBKEY: 'Public key should be 64-character hex or npub format',
-    INVALID_ARGS: 'Use agent-pulse help to see correct command usage',
-    GROUP_NOT_FOUND: 'List groups with: agent-pulse groups',
-    FILE_ERROR: 'Ensure .data directory exists and is writable'
+  // Map legacy error codes to new error reporter
+  const errorKeyMap = {
+    SERVICE_NOT_RUNNING: 'SERVICE_NOT_RUNNING',
+    SERVICE_ALREADY_RUNNING: 'SERVICE_ALREADY_RUNNING',
+    SERVICE_START_FAILED: 'SERVICE_START_FAILED',
+    NETWORK_DISCONNECTED: 'NETWORK_DISCONNECTED',
+    NETWORK_SEND_FAILED: 'NETWORK_SEND_FAILED',
+    RELAY_ALL_FAILED: 'RELAY_ALL_FAILED',
+    INVALID_ARGS: 'INVALID_ARGS',
+    INVALID_PUBKEY: 'INVALID_PUBKEY',
+    INVALID_SIGNATURE: 'INVALID_SIGNATURE',
+    GROUP_NOT_FOUND: 'GROUP_NOT_FOUND',
+    GROUP_ALREADY_EXISTS: 'GROUP_ALREADY_EXISTS',
+    NOT_GROUP_OWNER: 'NOT_GROUP_OWNER',
+    MEMBER_NOT_FOUND: 'MEMBER_NOT_FOUND',
+    MEMBER_BANNED: 'MEMBER_BANNED',
+    MEMBER_MUTED: 'MEMBER_MUTED',
+    MESSAGE_EXPIRED: 'MESSAGE_EXPIRED',
+    MESSAGE_RETRY_EXHAUSTED: 'MESSAGE_RETRY_EXHAUSTED',
+    FILE_ERROR: 'FILE_ERROR',
+    UNKNOWN_COMMAND: 'UNKNOWN_COMMAND',
+    INTERNAL_ERROR: 'INTERNAL_ERROR'
   };
 
-  if (suggestions[code]) {
-    response.suggestion = suggestions[code];
-  }
+  const errorKey = errorKeyMap[code] || 'INTERNAL_ERROR';
+  const errorDef = ErrorCodes[errorKey];
+
+  const response = {
+    ok: false,
+    code: errorDef?.code || 901,
+    codeKey: errorKey,
+    error: error || errorDef?.message || 'Unknown error',
+    suggestion: errorDef?.suggestion || null,
+    severity: errorDef?.severity || 'medium',
+    category: errorDef?.category || 'internal',
+    retryable: errorDef?.retryable || false,
+    timestamp: Date.now()
+  };
 
   return response;
 }
