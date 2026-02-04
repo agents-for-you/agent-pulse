@@ -39,6 +39,54 @@ function out(data) {
 }
 
 /**
+ * Progress indicator for long-running operations
+ * @param {string} message - Progress message
+ * @returns {Object} Progress controller
+ */
+function showProgress(message) {
+  let dots = 0;
+  const interval = setInterval(() => {
+    dots = (dots + 1) % 4;
+    process.stderr.write(`\r${message}${'.'.repeat(dots)}${' '.repeat(3 - dots)}`);
+  }, 200);
+
+  return {
+    stop: (finalMessage) => {
+      clearInterval(interval);
+      process.stderr.write(`\r${finalMessage || message}\n`);
+    }
+  };
+}
+
+/**
+ * Format error with suggestion
+ * @param {string} code - Error code
+ * @param {string} error - Error message
+ * @returns {Object} Enhanced error response
+ */
+function formatError(code, error) {
+  const response = { ok: false, code, error };
+
+  // Add suggestions for common errors
+  const suggestions = {
+    SERVICE_NOT_RUNNING: 'Start the service with: agent-pulse start',
+    SERVICE_ALREADY_RUNNING: 'Check status with: agent-pulse status or stop with: agent-pulse stop',
+    SERVICE_START_FAILED: 'Check if port is in use or run with --ephemeral for testing',
+    NETWORK_DISCONNECTED: 'Check relay status with: agent-pulse relay-status',
+    INVALID_PUBKEY: 'Public key should be 64-character hex or npub format',
+    INVALID_ARGS: 'Use agent-pulse help to see correct command usage',
+    GROUP_NOT_FOUND: 'List groups with: agent-pulse groups',
+    FILE_ERROR: 'Ensure .data directory exists and is writable'
+  };
+
+  if (suggestions[code]) {
+    response.suggestion = suggestions[code];
+  }
+
+  return response;
+}
+
+/**
  * Normalize public key input - accepts npub, nsec, or hex format
  * @param {string} input - Public key (npub, hex, or nsec for private key operations)
  * @param {'public'|'private'} [keyType='public'] - Key type
@@ -146,14 +194,28 @@ const commands = {
   async start(args) {
     // Check for --ephemeral flag
     const ephemeral = args.includes('--ephemeral');
-    const result = await start({ ephemeral });
-    out(result);
+    const progress = showProgress('Starting AgentPulse service');
+    try {
+      const result = await start({ ephemeral });
+      progress.stop(result.ok ? 'AgentPulse service started' : 'Failed to start service');
+      out(result);
+    } catch (err) {
+      progress.stop('Service start failed');
+      out(formatError(ErrorCode.INTERNAL_ERROR, err.message));
+    }
   },
 
   // Stop background service
   async stop() {
-    const result = await stop();
-    out(result);
+    const progress = showProgress('Stopping AgentPulse service');
+    try {
+      const result = await stop();
+      progress.stop(result.ok ? 'AgentPulse service stopped' : 'Failed to stop service');
+      out(result);
+    } catch (err) {
+      progress.stop('Service stop failed');
+      out(formatError(ErrorCode.INTERNAL_ERROR, err.message));
+    }
   },
 
   // View service status (including health info)
@@ -456,11 +518,15 @@ const commands = {
       }
     }
 
+    const progress = showProgress('Checking relay connections');
     try {
       const result = await getRelayStatus({ timeout });
+      const connected = result.summary?.connected || 0;
+      progress.stop(`Relay status: ${connected}/${result.summary?.total || 0} connected`);
       out(result);
     } catch (err) {
-      out({ ok: false, code: ErrorCode.INTERNAL_ERROR, error: err.message });
+      progress.stop('Relay check failed');
+      out(formatError(ErrorCode.INTERNAL_ERROR, err.message));
     }
   }
 };

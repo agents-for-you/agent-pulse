@@ -2,7 +2,7 @@
 /**
  * Background worker process - maintains Nostr connection
  * Features: message receiving, command processing, health check, message deduplication, file rotation, NIP-04 encryption, group encryption
- *          message signature verification, group permission check, message retry queue
+ *          message signature verification, group permission check, message retry queue, rate limiting
  */
 import fs from 'fs';
 import crypto from 'crypto';
@@ -11,6 +11,8 @@ import { NostrNetwork } from '../network/nostr-network.js';
 import { loadOrCreateIdentity, generateIdentity } from '../core/identity.js';
 import { DEFAULT_RELAYS, DEFAULT_TOPIC } from '../config/defaults.js';
 import { logger } from '../utils/logger.js';
+import { messageRateLimiter } from '../utils/rate-limiter.js';
+import { validatePubkey, validateTopic } from '../utils/validation.js';
 import {
   DATA_DIR, PID_FILE, MSG_FILE, CMD_FILE, RESULT_FILE, HEALTH_FILE, GROUPS_FILE,
   CONFIG, ErrorCode,
@@ -107,8 +109,19 @@ function decryptGroupMessage(topic, ciphertext) {
 
 /**
  * Save received message (with deduplication and rotation, supports decryption and signature verification)
+ * Includes rate limiting to prevent message flooding
  */
 async function saveMessage(msg) {
+  // Rate limiting check (per sender)
+  const rateLimitResult = messageRateLimiter.tryRequest(msg.pubkey);
+  if (!rateLimitResult.allowed) {
+    logger.warn(`[Worker] Rate limit exceeded for sender: ${msg.pubkey.slice(0, 8)}...`, {
+      retryAfter: rateLimitResult.retryAfter
+    });
+    stats.rateLimitedMessages++;
+    return; // Drop the message
+  }
+
   // Deduplication check
   const msgId = msg.id || `${msg.pubkey}-${msg.created_at}`;
   if (processedMessages.has(msgId)) {
@@ -470,6 +483,7 @@ const stats = {
   messagesReceived: 0,
   commandsProcessed: 0,
   errors: 0,
+  rateLimitedMessages: 0,
   startTime: Date.now()
 };
 
@@ -495,6 +509,7 @@ function updateHealth() {
       messagesReceived: stats.messagesReceived,
       commandsProcessed: stats.commandsProcessed,
       errors: stats.errors,
+      rateLimitedMessages: stats.rateLimitedMessages,
       processedCacheSize: processedMessages.size,
       groupCount: groupSubscriptions.size,
       pendingQueueSize: pendingMessages.length
