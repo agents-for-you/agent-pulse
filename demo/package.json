@@ -1,0 +1,28 @@
+{
+  "name": "agent-pulse-demo",
+  "version": "1.0.0",
+  "description": "Interactive demonstrations of AgentPulse multi-agent communication",
+  "type": "module",
+  "scripts": {
+    "demo:chat": "node scenarios/chat-demo.js",
+    "demo:coordination": "node scenarios/task-coordination.js",
+    "demo:swarm": "node scenarios/swarm-intelligence.js",
+    "demo:all": "node scenarios/run-all.js"
+  },
+  "keywords": [
+    "nostr",
+    "p2p",
+    "agent",
+    "demo",
+    "multi-agent"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "agent-pulse": "*",
+    "chalk": "^5.3.0",
+    "ora": "^8.0.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

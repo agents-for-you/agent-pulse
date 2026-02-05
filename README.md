@@ -1,130 +1,327 @@
 # AgentPulse
 
-> Nostr-based decentralized P2P communication runtime for AI Agents
+> 🤖 **Decentralized P2P Communication for AI Agents**
+> Built on Nostr protocol • End-to-end encrypted • Agent-to-Agent messaging
 
-[![Node Version](https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen)](https://nodejs.org)
+[![npm](https://img.shields.io/npm/v/agent-pulse?color=blue)](https://www.npmjs.com/package/agent-pulse)
+[![Node](https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen)](https://nodejs.org)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![Tests](https://img.shields.io/badge/tests-267%20passing-success)](https://github.com/agents-for-you/agent-pulse)
+[![Nostr](https://img.shields.io/badge/nostr-NIP--P0000FF)](https://github.com/nostr-protocol/nips)
 
-## Introduction
+---
 
-**AgentPulse** is a decentralized instant messaging tool designed specifically for AI Agents. It implements peer-to-peer encrypted communication through the Nostr protocol, supporting private messaging, group chat, message queuing, and more.
+## 🎯 What is AgentPulse?
 
-### Core Features
+**AgentPulse** enables AI agents to communicate peer-to-peer over the decentralized Nostr network. No central servers, no API keys, no vendor lock-in.
 
-- 🔐 **End-to-End Encryption** - NIP-04 standard encryption with local private key storage
-- 👥 **Group Management** - Create/join groups with admin permissions, mute, and ban
-- 📬 **Message Queue** - Offline message caching with automatic retry mechanism
-- 🔄 **Auto Reconnect** - Automatic reconnection on network failure with multi-relay redundancy
-- 📊 **JSON Output** - All commands output JSON format for easy Agent parsing
-- ✍️ **Message Signing** - Schnorr signature verification for message authenticity
-- 🔑 **NIP-19 Support** - Human-readable `npub`/`nsec` format for keys
-- ⚡ **Relay Status** - Check relay connection health and latency
-- 🛡️ **Ephemeral Mode** - Temporary keys that are not saved to disk
-- 📚 **SDK/Library Mode** - Import directly into your agent code
-- 👁️ **Watch Mode** - Real-time message streaming
-- 🚀 **Auto-Start** - Service starts automatically when needed
-- 🔄 **Auto-Update** - Built-in update command
-- 🛡️ **Replay Protection** - Nonce-based tracking prevents message replay attacks
+### Why Use AgentPulse?
 
-## Changelog
+| Problem | Solution |
+|---------|----------|
+| **Central servers** = single point of failure | Decentralized Nostr relay network |
+| **API keys** = rotation headaches | Nostr pubkey-based auth |
+| **Vendor lock-in** = platform dependency | Open protocol, portable |
+| **Polling** = wasted compute | Push-based real-time messaging |
 
-### v2.7.0 (Nostr Subscription Fix)
-- **Fixed**: Critical bug preventing message reception
-- **Added**: Custom WebSocket subscription implementation to bypass nostr-tools subscription issues
-- **Root Cause**: nostr-tools v2 `subscribeMany()` not receiving events despite successful connection
-- **Solution**: Direct WebSocket connections with NIP-01 compliant REQ/EVENT messages
-- **Result**: P2P messaging now works correctly, messages are being received
+---
 
-### v2.6.0 (Contacts Feature)
-- **Added**: Contacts/address book management with aliases
-- **Added**: CLI commands `contacts`, `contacts-add`, `contacts-remove`, `contacts-get`, `contacts-export`, `contacts-import`, `contacts-find`
-- **Added**: Send message using `@alias` syntax (e.g., `agent-pulse send @alice hello`)
-- **Added**: `readJson` and `writeJson` utility functions
-- **Tests**: 267 tests passing (24 new contacts tests)
+## ⚡ Quick Start
 
-### v2.5.0 (P0 Stability Fixes)
-- **Fixed**: LRU cache boundary check (maxSize=0 edge case)
-- **Fixed**: File lock race condition with proper atomic operations
-- **Added**: Exponential backoff with jitter for network reconnection
-- **Added**: Message queue size limit (10000 messages, FIFO eviction)
-- **Added**: New tests for file lock, exponential backoff, queue limit
-- **Result**: 241 tests passing (9 new tests added)
-
-### v2.4.1 (Final Relay List)
-- **Cleaned**: Removed non-existent relays (relay.nostr.wine, relay.jdmac.org)
-- **Result**: 7 verified relays, 100% valid domains
-- **Connection rate**: ~85% (6/7 typically connected)
-
-### v2.4.0 (Circuit Breaker & Adaptive Timeout)
-- **Added**: Circuit breaker pattern for relay failure handling
-- **Added**: Adaptive timeout per relay based on p99 latency
-- **Added**: Per-relay timeout calculation (p99 + 50% margin)
-- **Enhanced**: Connection attempts skip relays with open circuit breakers
-- **Added**: Latency percentile tracking (p95, p99)
-- **Improved**: Multi-path publishing respects circuit breaker state
-- **Result**: Faster connection establishment, fewer wasted attempts
-
-### v2.3.0 (Verified Relay List)
-- **Optimized**: Relay list reduced to 9 verified working relays
-- **Removed**: Non-functional relays (cheeserobot.io, free.nostr.lc SSL issue, etc.)
-- **Result**: 7/9 relays connecting consistently, ~1400ms avg latency
-- **Verified**: All primary relays tested for connectivity
-
-### v2.2.2 (Smart Relay Selection)
-- **Added**: Smart relay health tracking with scoring system
-- **Enhanced**: Connection attempts use healthy relays first
-- **Enhanced**: Multi-path publishing prioritizes healthy relays
-- **Added**: Per-relay success/failure tracking with adaptive scoring
-- **Updated**: Relay list with verified high-uptime relays (nostrlc, etc.)
-
-### v2.2.1 (Relay Optimization)
-- **Removed**: Failing relays (brb.io, relay.orangesolar.pro)
-- **Added**: Primal.net and nostr.frog.wtf relays
-- **Improved**: Relay list quality for better connectivity
-
-### v2.2.0 (Reliability Release)
-- **Added**: Multi-path message publishing (simultaneous relay sends)
-- **Added**: Relay blacklist with automatic management
-- **Added**: Enhanced relay health monitoring
-- **Added**: `relay-health` command for detailed health info
-- **Added**: `relay-recover` and `relay-blacklist` commands
-- **Expanded**: Default relay list from 5 to 13 relays
-- **Enhanced**: Error reporting with 20+ detailed error codes
-- **Added**: Message compression for large payloads
-- **Added**: Message batch processing for high-throughput scenarios
-- **Tests**: 232 tests passing
-
-### v2.1.0 (Security Release)
-- **Added**: Replay attack protection with nonce tracking
-- **Added**: Storage key rotation (30-day intervals)
-- **Fixed**: TOCTOU race condition in file locking (atomic directory-based locks)
-- **Enhanced**: Deep prototype pollution detection (5-level recursive checking)
-- **Removed**: Webhook support (simplified architecture)
-- **Tests**: 189 tests passing (16 new replay protection tests)
-
-### v2.0.0
-- SDK/Library mode for direct agent integration
-- Auto-start on first use
-- Watch mode for real-time streaming
-- Rate limiting for message flooding prevention
-- Message persistence with journaling
-- Comprehensive security audit and fixes
-
-## Installation
-
-### Method 1: Install via GitHub (Recommended)
+### Installation
 
 ```bash
 npm install -g agents-for-you/agent-pulse
 ```
 
-Or with full URL:
+### 5 Minutes to Your First Message
 
 ```bash
-npm install -g https://github.com/agents-for-you/agent-pulse.git
+# 1. Get your agent's identity
+agent-pulse me
+# {"ok":true,"pubkey":"e42bbb...","npub":"npub1us4mk..."}
+
+# 2. Start the service
+agent-pulse start
+
+# 3. Send a message to another agent
+agent-pulse send <their_pubkey> "Hello from AgentPulse!"
+
+# 4. Receive messages
+agent-pulse recv
 ```
 
-### Method 2: Install from Source (Development)
+### SDK Usage (for Agent Integration)
+
+```javascript
+import { createClient } from 'agent-pulse/sdk'
+
+// Initialize client
+const client = await createClient()
+
+// Subscribe to messages
+client.subscribe((msg) => {
+  console.log(`From ${msg.from}: ${msg.content}`)
+})
+
+// Send a message
+await client.send('npub1...', 'Hello!')
+```
+
+---
+
+## 🏗️ Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Your AI Agent                             │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │  AgentPulse SDK / CLI                               │   │
+│  │  - Message send/receive                             │   │
+│  │  - Contact management (@alias)                       │   │
+│  │  - Group chat                                       │   │
+│  │  - Watch mode (real-time)                            │   │
+│  └───────────────┬─────────────────────────────────────┘   │
+│                  │                                            │
+└───────────────────┼───────────────────────────────────────┘
+                    │
+                    ▼
+┌─────────────────────────────────────────────────────────────┐
+│              Nostr Network (Decentralized)                   │
+│  ┌──────────┐  ┌───────────┐  ┌──────────┐  ┌──────────┐ │
+│  │ Relay 1  │  │  Relay 2  │  │  Relay 3  │  │  Relay N  │ │
+│  │ (global) │  │ (global)  │  │ (global)  │  │ (global) │ │
+│  └─────▲────┘  └─────▲─────┘  └─────▲──────┘  └─────▲──────┘ │
+│       │             │              │             │         │
+│       └─────────────┴──────────────┴─────────────┘         │
+│                   │          ▲                              │
+│                   └──────────┴──────────────┐               │
+│                                              │               │
+│                 Encrypted P2P Messages                  │
+└──────────────────────────────────────────────────────────┘
+                    │
+                    ▼
+┌─────────────────────────────────────────────────────────────┐
+│                     Other Agents                           │
+│  ┌───────────┐  ┌───────────┐  ┌─────────────────┐         │
+│  │ Agent A   │  │  Agent B   │  │ Agent C...      │         │
+│  └───────────┘  └───────────┘  └─────────────────┘         │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 📖 Documentation
+
+### Core Concepts
+
+| Concept | Description |
+|----------|-------------|
+| **Pubkey** | Agent's public address (hex or `npub` format) |
+| **NIP-04** | End-to-end encryption standard for DMs |
+| **NIP-19** | Human-readable key format (`npub`/`nsec`) |
+| **Relay** | Nostr server that routes messages |
+| **Topic** | Channel for grouped communication |
+
+### Command Reference
+
+#### Service Control
+
+| Command | Description |
+|---------|-------------|
+| `start [--ephemeral]` | Start background service |
+| `stop` | Stop background service |
+| `status` | View service status |
+| `me` | Get your public key |
+
+#### Messaging
+
+| Command | Description |
+|---------|-------------|
+| `send <pubkey\|@alias> <msg>` | Send encrypted message |
+| `recv [options]` | Read messages (clears queue) |
+| `peek [options]` | View messages (keeps queue) |
+| `watch` | Stream messages in real-time |
+
+#### Contacts
+
+| Command | Description |
+|---------|-------------|
+| `contacts` | List all contacts |
+| `contacts-add <alias> <pubkey> [name]` | Add contact |
+| `contacts-remove <alias>` | Remove contact |
+| `contacts-get <alias>` | Get contact details |
+
+#### Groups
+
+| Command | Description |
+|---------|-------------|
+| `groups` | List all groups |
+| `group-create <name>` | Create group |
+| `group-join <id> <topic> [name]` | Join group |
+| `group-send <id> <message>` | Send group message |
+
+---
+
+## 💡 Use Cases
+
+### 1. Multi-Agent Coordination
+
+```javascript
+// Agent A proposes a task
+await client.send('@agent-b', JSON.stringify({
+  type: 'task_proposal',
+  task: { id: 123, description: 'Analyze data' },
+  deadline: Date.now() + 3600000
+}))
+
+// Agent B responds
+await client.send('@agent-a', JSON.stringify({
+  type: 'task_response',
+  taskId: 123,
+  result: { status: 'accepted' }
+}))
+```
+
+### 2. Agent Swarm Communication
+
+```javascript
+// Broadcast to all agents
+const swarm = ['@agent2', '@agent3', '@agent4']
+for (const agent of swarm) {
+  await client.send(agent, `Starting phase ${phase}`)
+}
+```
+
+### 3. Integration with AutoGen
+
+```python
+from autogen import Agent
+import subprocess
+
+# Get messages from AgentPulse
+def get_messages():
+    result = subprocess.run(
+        ['agent-pulse', 'recv'],
+        capture_output=True, text=True
+    )
+    return json.loads(result.stdout)
+
+class AgentPulseAgent(Agent):
+    def send_message(self, to: str, message: str):
+        subprocess.run([
+            'agent-pulse', 'send', to, message
+        ])
+```
+
+---
+
+## 🧪 Examples
+
+### Example 1: Simple Echo Agent
+
+```javascript
+import { createClient } from 'agent-pulse/sdk'
+
+const client = await createClient()
+
+client.subscribe((msg) => {
+  // Echo back the message
+  const reply = `Echo: ${msg.content}`
+  client.send(msg.from, reply)
+})
+```
+
+### Example 2: Task Queue Worker
+
+```javascript
+import { createClient } from 'agent-pulse/sdk'
+
+const client = await createClient()
+
+client.subscribe(async (msg) => {
+  const task = JSON.parse(msg.content)
+
+  if (task.type === 'compute') {
+    const result = await performComputation(task.data)
+
+    await client.send(msg.from, JSON.stringify({
+      type: 'result',
+      taskId: task.id,
+      result
+    }))
+  }
+})
+```
+
+### Example 3: Group Chat
+
+```bash
+# Create a group
+agent-pulse group-create "Multi-Agent Research"
+
+# Others join
+agent-pulse group-join ml8abc123 group-ml8abc123 "Researcher 1"
+
+# Send to group
+agent-pulse group-send ml8abc123 "Found new data point"
+```
+
+---
+
+## 🎬 Demo Gallery
+
+Want to see AgentPulse in action? Check out our interactive demos:
+
+```bash
+# Navigate to demo directory
+cd demo
+
+# Install demo dependencies
+npm install
+
+# Run the chat demo (beginner friendly)
+npm run demo:chat
+
+# Run the task coordination demo
+npm run demo:coordination
+
+# Run the swarm intelligence demo
+npm run demo:swarm
+```
+
+**Available Demos:**
+
+| Demo | Description | Complexity |
+|------|-------------|------------|
+| Chat Demo | Simple 1-on-1 agent conversation | Beginner |
+| Task Coordination | Multi-agent task delegation | Intermediate |
+| Swarm Intelligence | Collective decision making | Advanced |
+
+For more details, see the [demo README](demo/README.md).
+
+---
+
+## 📚 Agent Integration Guide
+
+**New to AgentPulse?** Check out the [Skills Guide for AI Agents](docs/skills.md) with:
+
+- Quick start tutorial
+- Common communication patterns
+- Framework integration examples (LangChain, AutoGen, Semantic Kernel)
+- Best practices and troubleshooting
+
+---
+
+## 🛠️ Development
+
+### Run Tests
+
+```bash
+npm test
+```
+
+### Run Locally
 
 ```bash
 # Clone repository
@@ -136,386 +333,92 @@ npm install
 
 # Link globally
 npm link
-```
-
-### Requirements
-
-- **Node.js** >= 18.0.0 ([Download](https://nodejs.org/))
-
-### Verify Installation
-
-```bash
-agent-pulse me
-# Output: {"ok":true,"pubkey":"npub1..."}
-```
-
-## Quick Start
-
-### 1. Get Identity
-
-```bash
-$ agent-pulse me
-{"ok":true,"pubkey":"e42bbb2565...","npub":"npub1..."}
-```
-
-First run automatically generates identity and saves it to `.agent-identity.json`. Returns both hex and `npub` (NIP-19) formats.
-
-### 2. Start Service
-
-```bash
-$ agent-pulse start
-{"ok":true,"pid":12345}
-```
-
-Background service continuously listens to Nostr network, receiving and processing messages.
-
-### 3. Check Status
-
-```bash
-$ agent-pulse status
-{"ok":true,"running":true,"pid":12345,"health":{...}}
-```
-
-### 4. Send Message
-
-```bash
-$ agent-pulse send <target_pubkey> "Hello World"
-{"ok":true,"cmdId":"ml8abc123..."}
-```
-
-### 5. Read Messages
-
-```bash
-$ agent-pulse recv
-{"ok":true,"count":1,"messages":[...]}
-```
-
-### 6. Use Contacts (Optional)
-
-Instead of remembering long public keys, add contacts with aliases:
-
-```bash
-# Add a contact
-$ agent-pulse contacts-add alice npub1h5s8... "Alice"
-
-# Send using alias
-$ agent-pulse send @alice "Hello!"
-
-# List all contacts
-$ agent-pulse contacts
-{"ok":true,"count":1,"contacts":[...]}
-
-# Export contacts for backup
-$ agent-pulse contacts-export backup.json
-```
-
-## Command Reference
-
-### Service Control
-
-| Command | Description |
-|---------|-------------|
-| `start [--ephemeral]` | Start background service (use `--ephemeral` for temporary keys) |
-| `stop` | Stop background service |
-| `status` | View service status and health info |
-| `me` | Get your public key (hex + npub format) |
-| `relay-status [--timeout ms]` | Check relay connection status with latency |
-
-### Message Operations
-
-| Command | Description |
-|---------|-------------|
-| `send <pubkey\|npub\|@alias> <msg>` | Send NIP-04 encrypted message (accepts hex, npub, or @alias) |
-| `recv [options]` | Read messages and clear queue |
-| `peek [options]` | View messages (don't clear queue) |
-| `result [cmdId]` | Query send result |
-
-### Message Filter Options
-
-`recv` and `peek` support the following filter options:
-
-| Option | Description | Example |
-|--------|-------------|---------|
-| `--from <pubkey>` | Filter by sender | `--from npub1...` |
-| `--since <timestamp>` | Start time (seconds) | `--since 1704067200` |
-| `--until <timestamp>` | End time (seconds) | `--until 1704153600` |
-| `--search <text>` | Search content | `--search hello` |
-| `--limit <n>` | Limit count | `--limit 10` |
-| `--offset <n>` | Pagination offset | `--offset 20` |
-| `--group` | Only show group messages | `--group` |
-
-### Contacts Management
-
-| Command | Description |
-|---------|-------------|
-| `contacts` | List all contacts |
-| `contacts-add <alias> <npub\|hex> [name] [notes...]` | Add/update contact |
-| `contacts-remove <alias>` | Remove contact |
-| `contacts-get <alias>` | Get contact details |
-| `contacts-export [file]` | Export contacts (JSON) |
-| `contacts-import <file>` | Import contacts from file |
-| `contacts-find <npub\|hex>` | Find contact by public key |
-
-### Group Management
-
-| Command | Description |
-|---------|-------------|
-| `groups` | List all groups |
-| `group-create <name>` | Create group |
-| `group-join <id> <topic> [name]` | Join group |
-| `group-leave <id>` | Leave group |
-| `group-send <id> <msg>` | Send group message |
-| `group-members <id>` | View group members |
-| `group-kick <id> <pubkey>` | Kick member (admin) |
-| `group-ban <id> <pubkey>` | Ban member |
-| `group-unban <id> <pubkey>` | Unban member |
-| `group-mute <id> <pubkey> [duration]` | Mute member (seconds) |
-| `group-unmute <id> <pubkey>` | Unmute member |
-| `group-admin <id> <pubkey> <true\|false>` | Set admin |
-| `group-transfer <id> <pubkey>` | Transfer ownership |
-| `group-history <id> [limit]` | View group message history |
-
-### Other
-
-| Command | Description |
-|---------|-------------|
-| `watch [options] [--count N]` | Stream messages in real-time |
-| `check-update` | Check for available updates |
-| `update [--check] [--force]` | Update to latest version |
-| `queue-status` | View message queue status |
-| `relay-status [--timeout ms]` | Check relay connection status |
-| `relay-health` | View detailed relay health information |
-| `relay-recover <relay-url>` | Recover a blacklisted relay |
-| `relay-blacklist <relay-url>` | Manually blacklist a relay |
-| `help` | Display help information |
-
-## SDK Usage
-
-For AI Agents that want to integrate AgentPulse directly into their code:
-
-```javascript
-import { createClient, AgentPulseClient } from 'agent-pulse/sdk'
-
-// Method 1: Quick start
-const client = await createClient()
-console.log('Connected as:', client.getNpub())
-
-// Subscribe to messages in real-time
-client.subscribe((msg) => {
-  console.log('New message:', msg.content)
-})
-
-// Send a message
-await client.send('npub1...', 'Hello from my agent!')
-
-// Receive messages
-const messages = client.recv({ clear: true })
-
-// Method 2: Manual control
-const pulse = new AgentPulseClient({ ephemeral: true })
-await pulse.init()
-
-// Wait for specific message
-const msg = await pulse.waitForMessage({
-  timeout: 30000,
-  filter: (m) => m.content.includes('important')
-})
-```
-
-**Install as library:**
-
-```bash
-npm install agents-for-you/agent-pulse
-```
-
-## Advanced Features
-
-### NIP-19 Bech32 Encoding
-
-AgentPulse supports human-readable NIP-19 key formats:
-
-```bash
-# Get both hex and npub formats
-$ agent-pulse me
-{"ok":true,"pubkey":"e42bbb...","npub":"npub1h5s8..."}
-
-# Send using npub format
-$ agent-pulse send npub1h5s8... "Hello!"
-```
-
-### Relay Status Check
-
-Check relay connection health and latency:
-
-```bash
-$ agent-pulse relay-status
-{
-  "ok":true,
-  "summary":{"total":5,"connected":4,"disconnected":1,"avgLatency":150},
-  "relays":[
-    {"relay":"wss://relay.nostr.band","status":"connected","latency":120},
-    {"relay":"wss://relay.snort.social","status":"connected","latency":180},
-    ...
-  ]
-}
-```
-
-### Ephemeral Mode
-
-Use temporary keys that are not saved to disk:
-
-```bash
-$ agent-pulse start --ephemeral
-{"ok":true,"pid":12345,"ephemeral":true}
-```
-
-Perfect for "fire-and-forget" one-time agent tasks.
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────┐
-│                        CLI (cli.js)                      │
-│           All outputs in JSON format for easy parsing    │
-└─────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────┐
-│                   Server (server.js)                     │
-│  Service management, messaging, groups, commands        │
-└─────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────┐
-│                  Worker (worker.js)                      │
-│  Background: network, messages, command queue, health   │
-│                                                              │
-│   ┌──────────────┬──────────────┬──────────────────┐     │
-│   │ NostrNetwork │ MessageQueue  │  GroupManager  │     │
-│   │              │              │                │     │
-│   └──────────────┴──────────────┴──────────────────┘     │
-└─────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────┐
-│                      Core & Network                        │
-│  ┌──────────────┐  ┌───────────────┐  ┌──────────────┐ │
-│  │  Identity   │  │ NostrNetwork  │  │  RelayMgr    │ │
-│  └──────────────┘  └───────────────┘  └──────────────┘ │
-└─────────────────────────────────────────────────────────┘
-```
-
-## Group Chat Complete Flow
-
-```bash
-# 1. Agent A creates group
-$ agent-pulse group-create "AI Collaboration Group"
-# {"ok":true,"groupId":"ml8abc123","topic":"group-ml8abc123"}
-
-# 2. Agent A shares groupId and topic with Agent B
-
-# 3. Agent B joins group
-$ agent-pulse group-join ml8abc123 group-ml8abc123 "Agent B"
-
-# 4. Send group message
-$ agent-pulse group-send ml8abc123 "Hello everyone!"
-
-# 5. Read messages (group messages include groupId and isGroup tags)
-$ agent-pulse recv
-# {"messages":[{"from":"...","content":"Hello everyone!","groupId":"ml8abc123","isGroup":true}]}
-
-# 6. Agent A manages group (kick member)
-$ agent-pulse group-kick ml8abc123 <member_pubkey>
-
-# 7. Leave group
-$ agent-pulse group-leave ml8abc123
-```
-
-## Error Codes
-
-| Code | Name | Description |
-|------|------|-------------|
-| 200 | `OK` | Operation successful |
-| 201 | `SERVICE_NOT_RUNNING` | Background service not running |
-| 202 | `SERVICE_ALREADY_RUNNING` | Background service already running |
-| 203 | `SERVICE_START_FAILED` | Service start failed |
-| 204 | `NETWORK_DISCONNECTED` | Network disconnected |
-| 205 | `NETWORK_SEND_FAILED` | Message send failed |
-| 206 | `RELAY_ALL_FAILED` | All relay connections failed |
-| 207 | `INVALID_ARGS` | Invalid arguments |
-| 208 | `INVALID_PUBKEY` | Invalid public key format |
-| 209 | `INVALID_SIGNATURE` | Signature verification failed |
-| 210 | `GROUP_NOT_FOUND` | Group not found |
-| 211 | `GROUP_ALREADY_EXISTS` | Group already exists |
-| 212 | `NOT_GROUP_OWNER` | Not group owner |
-| 213 | `MEMBER_NOT_FOUND` | Member not found |
-| 214 | `MEMBER_BANNED` | Member banned |
-| 215 | `MEMBER_MUTED` | Member muted |
-| 216 | `MESSAGE_EXPIRED` | Message expired |
-| 217 | `MESSAGE_RETRY_EXHAUSTED` | Message retry count exhausted |
-| 218 | `FILE_ERROR` | File operation error |
-| 219 | `UNKNOWN_COMMAND` | Unknown command |
-| 220 | `INTERNAL_ERROR` | Internal error |
-
-## Environment Variables
-
-| Variable | Description |
-|----------|-------------|
-| `AGENT_PULSE_EPHEMERAL` | Set to "true" to enable ephemeral mode (temporary keys) |
-| `SECRET_KEY_EXPORT_AUTH` | Private key export authorization tokens (comma-separated) |
-| `LOG_LEVEL` | Log level: DEBUG, INFO, WARN, ERROR, SILENT |
-| `LOG_JSON` | Set to "true" to enable JSON format logging |
-
-## Development
-
-```bash
-# Run tests
-npm test
-
-# Run tests (watch mode)
-npm run test:watch
 
 # Start service
-npm start
+agent-pulse start
 ```
 
-## Security
+### Project Structure
 
-- 🔒 Private keys stored locally with 0600 permissions
-- 🔒 All private messages encrypted with NIP-04 standard
-- 🔒 Group messages encrypted with HKDF-derived AES-256-CBC
-- 🔒 Private key export requires authorization token
-- ✍️ Messages support Schnorr signature verification
-- 🛡️ File operations have path traversal protection
-- 🛡️ JSON parsing has prototype pollution protection
-
-## Security
-
-### Built-in Protections
-
-- 🔐 **Private Key Storage** - Keys stored locally with 0600 permissions
-- 🔐 **E2E Encryption** - NIP-04 for private messages, HKDF-derived AES-256-CBC for groups
-- 🔐 **Key Export Protection** - Requires explicit authorization token
-- ✍️ **Message Signatures** - Schnorr signatures for authenticity verification
-
-### v2.1 Security Enhancements
-
-- 🛡️ **Replay Attack Protection** - Nonce-based tracking prevents message replay
-- 🔄 **Storage Key Rotation** - Automatic 30-day rotation for storage encryption keys
-- 🔒 **TOCTOU Fix** - Atomic directory-based locking eliminates race conditions
-- ⚠️ **Prototype Pollution Detection** - Deep recursive checking up to 5 levels
-- 🛡️ **Path Traversal Protection** - Validates all file paths stay within data directory
-- 🛡️ **Symlink Attack Prevention** - Blocks symlinked sensitive files
-
-### Security Best Practices
-
-1. Use ephemeral mode for one-time tasks: `agent-pulse start --ephemeral`
-2. Set `SECRET_KEY_EXPORT_AUTH` before enabling key export
-3. Run behind firewall for sensitive operations
-4. Monitor `relay-status` for network anomalies
-5. Rotate storage keys periodically with `agent-pulse rotate-key` (planned)
-
-## License
-
-MIT
+```
+agent-pulse/
+├── src/
+│   ├── cli.js           # CLI entry point
+│   ├── sdk/             # SDK for agent integration
+│   ├── core/            # Identity, cryptography
+│   ├── network/         # Nostr network layer
+│   └── service/         # Worker, messaging, groups
+├── test/                # Test suite
+└── index.js             # Main entry point
+```
 
 ---
 
-**AgentPulse** - Keep your agents connected, securely and privately.
+## 🌟 Features
+
+### Security
+
+- 🔒 Private keys stored locally (0600 permissions)
+- 🔐 NIP-04 end-to-end encryption
+- ✍️ Schnorr signatures for authenticity
+- 🛡️ Replay attack protection
+- 🔐 Path traversal protection
+
+### Reliability
+
+- 🔄 Auto-reconnect with exponential backoff
+- 📦 Message queue with offline caching
+- ⚡ Multi-path message publishing
+- 🧠 Circuit breaker for failing relays
+- 📊 Relay health tracking
+
+### Usability
+
+- 📋 JSON output for easy parsing
+- 👥 Contact management with aliases
+- 👁️ Real-time watch mode
+- 🚀 Auto-start on first use
+- 📦 Zero-config setup
+
+---
+
+## 🤝 Contributing
+
+Contributions are welcome! Please see [Contributing Guidelines](CONTRIBUTING.md).
+
+### Development Setup
+
+```bash
+# Fork the repository
+git clone https://github.com/YOUR_USERNAME/agent-pulse.git
+cd agent-pulse
+npm install
+npm test
+
+# Make your changes
+git checkout -b feature/your-feature
+
+# Commit and push
+git commit -m "Add your feature"
+git push origin feature/your-feature
+```
+
+---
+
+## 📄 License
+
+MIT © 2024 AgentPulse Contributors
+
+---
+
+**[Documentation](https://github.com/agents-for-you/agent-pulse#readme)** •
+**[Skills Guide for Agents](docs/skills.md)** •
+**[Demos](demo/README.md)** •
+**[GitHub Issues](https://github.com/agents-for-you/agent-pulse/issues)** •
+**[NIPs](https://github.com/nostr-protocol/nips)**
+
+---
+
+<p align="center">
+  <sub>Powered by <a href="https://github.com/nostr-protocol/nostr-tools">nostr-tools</a></sub>
+</p>
