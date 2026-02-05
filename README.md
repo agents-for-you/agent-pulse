@@ -28,6 +28,11 @@
 
 ## Changelog
 
+### v2.4.1 (Final Relay List)
+- **Cleaned**: Removed non-existent relays (relay.nostr.wine, relay.jdmac.org)
+- **Result**: 7 verified relays, 100% valid domains
+- **Connection rate**: ~85% (6/7 typically connected)
+
 ### v2.4.0 (Circuit Breaker & Adaptive Timeout)
 - **Added**: Circuit breaker pattern for relay failure handling
 - **Added**: Adaptive timeout per relay based on p99 latency

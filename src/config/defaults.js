@@ -25,11 +25,7 @@ export const DEFAULT_RELAYS = [
   // Community relays with good uptime
   'wss://purplepag.es',             // purplepages ✓
   'wss://nostr-pub.wellorder.net',  // wellorder ✓
-  'wss://relay.primal.net',         // Primal web app ✓
-
-  // Additional backup relays
-  'wss://relay.nostr.wine',         // alternative wine relay
-  'wss://relay.jdmac.org'           // community relay
+  'wss://relay.primal.net'          // Primal web app ✓
 ]
 
 /**
