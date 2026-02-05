@@ -266,6 +266,34 @@ export function withLock(fn, timeout = 1000) {
 }
 
 /**
+ * Safely read JSON file
+ * @param {string} filePath - File path
+ * @returns {Object|null} Parsed object or null
+ */
+export function readJson(filePath) {
+  if (!fs.existsSync(filePath)) return null;
+
+  try {
+    const content = fs.readFileSync(filePath, 'utf8').trim();
+    if (!content) return null;
+    return JSON.parse(content);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Safely write JSON file
+ * @param {string} filePath - File path
+ * @param {Object} data - Data to write
+ */
+export function writeJson(filePath, data) {
+  ensureDataDir();
+  const content = JSON.stringify(data, null, 2);
+  atomicWriteFileSync(filePath, content);
+}
+
+/**
  * Safely read JSONL file
  * @param {string} filePath - File path
  * @param {boolean} decrypt - Whether to decrypt

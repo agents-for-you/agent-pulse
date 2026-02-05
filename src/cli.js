@@ -34,6 +34,7 @@ import {
 } from './service/server.js';
 import { loadOrCreateIdentity, getIdentityPublicKeyNpub } from './core/identity.js';
 import { ErrorCode } from './service/shared.js';
+import { getContacts } from './service/contacts.js';
 import * as nip19 from './core/nip19.js';
 import * as updater from './utils/updater.js';
 import { createErrorResponse, createSuccessResponse, ErrorCodes } from './utils/error-reporter.js';
@@ -333,18 +334,37 @@ const commands = {
     });
   },
 
-  // Send message: send <pubkey|npub> <message>
+  // Send message: send <pubkey|npub|@alias> <message>
   async send(args) {
     const [target, ...rest] = args;
     const content = rest.join(' ');
 
     if (!target || !content) {
-      out({ ok: false, code: ErrorCode.INVALID_ARGS, error: 'usage: send <pubkey|npub> <message>' });
+      out({ ok: false, code: ErrorCode.INVALID_ARGS, error: 'usage: send <pubkey|npub|@alias> <message>' });
       return;
     }
 
     try {
-      const normalizedTarget = normalizePubkey(target, 'public');
+      let normalizedTarget = target;
+
+      // Handle @alias syntax
+      if (target.startsWith('@')) {
+        const alias = target.slice(1);
+        const contacts = getContacts();
+        const contact = contacts.get(alias);
+
+        if (!contact) {
+          out({ ok: false, code: ErrorCode.INVALID_ARGS, error: `Contact not found: @${alias}` });
+          return;
+        }
+
+        normalizedTarget = contact.npub || contact.pubkey;
+        // Update last used timestamp
+        contacts.touch(alias);
+      } else {
+        normalizedTarget = normalizePubkey(target, 'public');
+      }
+
       const result = await sendMessage(normalizedTarget, content, { autoStart: true });
       out(result);
     } catch (err) {
@@ -377,12 +397,20 @@ const commands = {
         recv: 'recv [options] - Read messages (and clear queue)',
         peek: 'peek [options] - View messages (don\'t clear queue)',
         watch: 'watch [options] [--count N] - Stream messages in real-time',
-        send: 'send <pubkey|npub> <message> - Send encrypted message',
+        send: 'send <pubkey|npub|@alias> <message> - Send encrypted message',
         result: 'result [cmdId] - Query send result',
         'queue-status': 'View message queue status (pending/retry messages)',
         'relay-status': 'relay-status [--timeout ms] - Check relay connection status with latency',
         'check-update': 'Check for available updates',
         'update': 'update [--check] [--force] - Update to latest version',
+        // Contacts commands
+        contacts: 'List all contacts',
+        'contacts-add': 'contacts-add <alias> <npub|hex> [name] [notes...] - Add/update contact',
+        'contacts-remove': 'contacts-remove <alias> - Remove contact',
+        'contacts-get': 'contacts-get <alias> - Get contact details',
+        'contacts-export': 'contacts-export [file] - Export contacts (JSON)',
+        'contacts-import': 'contacts-import <file> - Import contacts from file',
+        'contacts-find': 'contacts-find <npub|hex> - Find contact by public key',
         // Group commands
         groups: 'List all groups',
         'group-create': 'group-create <name> - Create group',
@@ -743,6 +771,181 @@ const commands = {
       progress.stop('Update failed');
       out({ ok: false, error: err.message });
     }
+  },
+
+  // ============ Contacts commands ============
+
+  // List all contacts
+  contacts() {
+    const contacts = getContacts();
+    const list = contacts.list();
+    out({ ok: true, count: list.length, contacts: list });
+  },
+
+  // Add contact: contacts-add <alias> <npub|hex> [name] [notes...]
+  'contacts-add'(args) {
+    const [alias, npub, ...rest] = args;
+
+    if (!alias || !npub) {
+      out({
+        ok: false,
+        code: ErrorCode.INVALID_ARGS,
+        error: 'usage: contacts-add <alias> <npub|hex> [name] [notes...]'
+      });
+      return;
+    }
+
+    // Split name and notes (name is first word after npub, rest are notes)
+    let name = '';
+    let notes = '';
+    if (rest.length > 0) {
+      // Check if the first arg looks like the start of notes (contains spaces or special chars)
+      // For simplicity, if there are multiple args, first is name, rest are notes
+      name = rest[0] || '';
+      if (rest.length > 1) {
+        notes = rest.slice(1).join(' ');
+      }
+    }
+
+    const contacts = getContacts();
+    const result = contacts.add(alias, { npub, name, notes });
+    out(result);
+  },
+
+  // Remove contact: contacts-remove <alias>
+  'contacts-remove'(args) {
+    const [alias] = args;
+
+    if (!alias) {
+      out({
+        ok: false,
+        code: ErrorCode.INVALID_ARGS,
+        error: 'usage: contacts-remove <alias>'
+      });
+      return;
+    }
+
+    const contacts = getContacts();
+    const result = contacts.remove(alias);
+    out(result);
+  },
+
+  // Get contact: contacts-get <alias>
+  'contacts-get'(args) {
+    const [alias] = args;
+
+    if (!alias) {
+      out({
+        ok: false,
+        code: ErrorCode.INVALID_ARGS,
+        error: 'usage: contacts-get <alias>'
+      });
+      return;
+    }
+
+    const contacts = getContacts();
+    const contact = contacts.get(alias);
+
+    if (!contact) {
+      out({
+        ok: false,
+        code: ErrorCode.INVALID_ARGS,
+        error: `Contact not found: ${alias}`
+      });
+      return;
+    }
+
+    out({ ok: true, alias, contact });
+  },
+
+  // Export contacts: contacts-export [file]
+  async 'contacts-export'(args) {
+    const [file] = args;
+    const contacts = getContacts();
+    const data = contacts.export();
+
+    if (file) {
+      try {
+        const fs = await import('fs');
+        const path = await import('path');
+        const fullPath = path.resolve(file);
+        fs.writeFileSync(fullPath, JSON.stringify(data, null, 2));
+        out({
+          ok: true,
+          exported: data,
+          file: fullPath,
+          count: Object.keys(data).length
+        });
+      } catch (err) {
+        out({
+          ok: false,
+          code: ErrorCode.FILE_ERROR,
+          error: err.message
+        });
+      }
+    } else {
+      out({ ok: true, contacts: data, count: Object.keys(data).length });
+    }
+  },
+
+  // Import contacts: contacts-import <file>
+  async 'contacts-import'(args) {
+    const [file] = args;
+
+    if (!file) {
+      out({
+        ok: false,
+        code: ErrorCode.INVALID_ARGS,
+        error: 'usage: contacts-import <file>'
+      });
+      return;
+    }
+
+    try {
+      const fs = await import('fs');
+      const path = await import('path');
+      const fullPath = path.resolve(file);
+      const content = fs.readFileSync(fullPath, 'utf8');
+      const data = JSON.parse(content);
+
+      const contacts = getContacts();
+      const result = contacts.import(data);
+      out(result);
+    } catch (err) {
+      out({
+        ok: false,
+        code: ErrorCode.FILE_ERROR,
+        error: err.message
+      });
+    }
+  },
+
+  // Find contact by pubkey: contacts-find <npub|hex>
+  'contacts-find'(args) {
+    const [pubkey] = args;
+
+    if (!pubkey) {
+      out({
+        ok: false,
+        code: ErrorCode.INVALID_ARGS,
+        error: 'usage: contacts-find <npub|hex>'
+      });
+      return;
+    }
+
+    const contacts = getContacts();
+    const result = contacts.getByPubkey(pubkey);
+
+    if (!result) {
+      out({
+        ok: false,
+        code: ErrorCode.INVALID_ARGS,
+        error: `No contact found with pubkey: ${pubkey.slice(0, 16)}...`
+      });
+      return;
+    }
+
+    out({ ok: true, alias: result.alias, contact: result.contact });
   }
 };
 

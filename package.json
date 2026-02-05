@@ -1,6 +1,6 @@
 {
   "name": "agent-pulse",
-  "version": "2.5.0",
+  "version": "2.6.0",
   "description": "Nostr-based decentralized P2P communication runtime for AI Agents - SDK, CLI, auto-update, watch mode, rate limiting, message persistence, replay protection, multi-path publishing, and relay management",
   "type": "module",
   "main": "index.js",

@@ -28,6 +28,13 @@
 
 ## Changelog
 
+### v2.6.0 (Contacts Feature)
+- **Added**: Contacts/address book management with aliases
+- **Added**: CLI commands `contacts`, `contacts-add`, `contacts-remove`, `contacts-get`, `contacts-export`, `contacts-import`, `contacts-find`
+- **Added**: Send message using `@alias` syntax (e.g., `agent-pulse send @alice hello`)
+- **Added**: `readJson` and `writeJson` utility functions
+- **Tests**: 267 tests passing (24 new contacts tests)
+
 ### v2.5.0 (P0 Stability Fixes)
 - **Fixed**: LRU cache boundary check (maxSize=0 edge case)
 - **Fixed**: File lock race condition with proper atomic operations
@@ -176,6 +183,25 @@ $ agent-pulse recv
 {"ok":true,"count":1,"messages":[...]}
 ```
 
+### 6. Use Contacts (Optional)
+
+Instead of remembering long public keys, add contacts with aliases:
+
+```bash
+# Add a contact
+$ agent-pulse contacts-add alice npub1h5s8... "Alice"
+
+# Send using alias
+$ agent-pulse send @alice "Hello!"
+
+# List all contacts
+$ agent-pulse contacts
+{"ok":true,"count":1,"contacts":[...]}
+
+# Export contacts for backup
+$ agent-pulse contacts-export backup.json
+```
+
 ## Command Reference
 
 ### Service Control
@@ -192,7 +218,7 @@ $ agent-pulse recv
 
 | Command | Description |
 |---------|-------------|
-| `send <pubkey\|npub> <msg>` | Send NIP-04 encrypted message (accepts hex or npub) |
+| `send <pubkey\|npub\|@alias> <msg>` | Send NIP-04 encrypted message (accepts hex, npub, or @alias) |
 | `recv [options]` | Read messages and clear queue |
 | `peek [options]` | View messages (don't clear queue) |
 | `result [cmdId]` | Query send result |
@@ -210,6 +236,18 @@ $ agent-pulse recv
 | `--limit <n>` | Limit count | `--limit 10` |
 | `--offset <n>` | Pagination offset | `--offset 20` |
 | `--group` | Only show group messages | `--group` |
+
+### Contacts Management
+
+| Command | Description |
+|---------|-------------|
+| `contacts` | List all contacts |
+| `contacts-add <alias> <npub\|hex> [name] [notes...]` | Add/update contact |
+| `contacts-remove <alias>` | Remove contact |
+| `contacts-get <alias>` | Get contact details |
+| `contacts-export [file]` | Export contacts (JSON) |
+| `contacts-import <file>` | Import contacts from file |
+| `contacts-find <npub\|hex>` | Find contact by public key |
 
 ### Group Management
 
