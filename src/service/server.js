@@ -676,3 +676,214 @@ export async function getRelayStatus(options = {}) {
     relays: results
   };
 }
+
+/**
+ * Get detailed relay health information
+ * @returns {Promise<Object>} Relay health result
+ */
+export async function getRelayHealth() {
+  const { RELAY_STATS_FILE } = await import('./shared.js');
+  const { DEFAULT_RELAYS, NETWORK_CONFIG } = await import('../config/defaults.js');
+  const fs = await import('fs');
+
+  let stats = {};
+  try {
+    if (fs.existsSync(RELAY_STATS_FILE)) {
+      stats = JSON.parse(fs.readFileSync(RELAY_STATS_FILE, 'utf8'));
+    }
+  } catch (err) {
+    // Ignore
+  }
+
+  const blacklistFile = RELAY_STATS_FILE.replace('relay_stats.json', 'relay_blacklist.json');
+  let blacklist = [];
+  try {
+    if (fs.existsSync(blacklistFile)) {
+      const data = JSON.parse(fs.readFileSync(blacklistFile, 'utf8'));
+      blacklist = data.relays || [];
+    }
+  } catch (err) {
+    // Ignore
+  }
+
+  const results = [];
+  for (const relay of DEFAULT_RELAYS) {
+    const relayStats = stats[relay] || {};
+    const isBlacklisted = blacklist.includes(relay);
+
+    let health = 'unknown';
+    if (isBlacklisted) {
+      health = 'blacklisted';
+    } else if (relayStats.isHealthy === false) {
+      health = 'unhealthy';
+    } else if (relayStats.isHealthy === true) {
+      health = 'healthy';
+    }
+
+    const total = (relayStats.successCount || 0) + (relayStats.failureCount || 0);
+    const successRate = total > 0 ? Math.round((relayStats.successCount || 0) / total * 100) : null;
+
+    results.push({
+      relay,
+      health,
+      successRate,
+      consecutiveFailures: relayStats.consecutiveFailures || 0,
+      lastSuccess: relayStats.lastSuccess || null,
+      lastFailure: relayStats.lastFailure || null
+    });
+  }
+
+  return {
+    ok: true,
+    summary: {
+      total: DEFAULT_RELAYS.length,
+      healthy: results.filter(r => r.health === 'healthy').length,
+      unhealthy: results.filter(r => r.health === 'unhealthy').length,
+      blacklisted: results.filter(r => r.health === 'blacklisted').length
+    },
+    relays: results
+  };
+}
+
+/**
+ * Recover a blacklisted relay
+ * @param {string} relayUrl - Relay URL to recover
+ * @returns {Promise<Object>} Recovery result
+ */
+export async function recoverRelay(relayUrl) {
+  const { RELAY_STATS_FILE } = await import('./shared.js');
+  const blacklistFile = RELAY_STATS_FILE.replace('relay_stats.json', 'relay_blacklist.json');
+  const fs = await import('fs');
+
+  // Validate relay URL
+  if (!relayUrl || typeof relayUrl !== 'string') {
+    return {
+      ok: false,
+      error: 'Invalid relay URL',
+      suggestion: 'Provide a valid wss:// or ws:// URL'
+    };
+  }
+
+  // Normalize URL
+  let normalizedUrl = relayUrl;
+  if (!normalizedUrl.startsWith('ws://') && !normalizedUrl.startsWith('wss://')) {
+    return {
+      ok: false,
+      error: 'Invalid relay URL protocol',
+      suggestion: 'Use wss:// or ws:// protocol'
+    };
+  }
+
+  try {
+    // Update blacklist
+    let blacklist = [];
+    if (fs.existsSync(blacklistFile)) {
+      const data = JSON.parse(fs.readFileSync(blacklistFile, 'utf8'));
+      blacklist = data.relays || [];
+    }
+
+    const wasBlacklisted = blacklist.includes(normalizedUrl);
+    blacklist = blacklist.filter(r => r !== normalizedUrl);
+
+    const { atomicWriteFileSync } = await import('./shared.js');
+    atomicWriteFileSync(
+      blacklistFile,
+      JSON.stringify({ relays: blacklist, updatedAt: Date.now() }, null, 2)
+    );
+
+    // Reset stats for this relay
+    if (fs.existsSync(RELAY_STATS_FILE)) {
+      const stats = JSON.parse(fs.readFileSync(RELAY_STATS_FILE, 'utf8'));
+      if (stats[normalizedUrl]) {
+        stats[normalizedUrl].blacklisted = false;
+        stats[normalizedUrl].consecutiveFailures = 0;
+        stats[normalizedUrl].recoveryAttempts = 0;
+      }
+      atomicWriteFileSync(RELAY_STATS_FILE, JSON.stringify(stats, null, 2));
+    }
+
+    return {
+      ok: true,
+      relay: normalizedUrl,
+      recovered: wasBlacklisted,
+      message: wasBlacklisted ? 'Relay recovered from blacklist' : 'Relay was not blacklisted'
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err.message
+    };
+  }
+}
+
+/**
+ * Blacklist a relay manually
+ * @param {string} relayUrl - Relay URL to blacklist
+ * @returns {Promise<Object>} Blacklist result
+ */
+export async function blacklistRelay(relayUrl) {
+  const { RELAY_STATS_FILE } = await import('./shared.js');
+  const blacklistFile = RELAY_STATS_FILE.replace('relay_stats.json', 'relay_blacklist.json');
+  const fs = await import('fs');
+
+  // Validate relay URL
+  if (!relayUrl || typeof relayUrl !== 'string') {
+    return {
+      ok: false,
+      error: 'Invalid relay URL',
+      suggestion: 'Provide a valid wss:// or ws:// URL'
+    };
+  }
+
+  // Normalize URL
+  let normalizedUrl = relayUrl;
+  if (!normalizedUrl.startsWith('ws://') && !normalizedUrl.startsWith('wss://')) {
+    return {
+      ok: false,
+      error: 'Invalid relay URL protocol',
+      suggestion: 'Use wss:// or ws:// protocol'
+    };
+  }
+
+  try {
+    // Update blacklist
+    let blacklist = [];
+    if (fs.existsSync(blacklistFile)) {
+      const data = JSON.parse(fs.readFileSync(blacklistFile, 'utf8'));
+      blacklist = data.relays || [];
+    }
+
+    const alreadyBlacklisted = blacklist.includes(normalizedUrl);
+    if (!alreadyBlacklisted) {
+      blacklist.push(normalizedUrl);
+    }
+
+    const { atomicWriteFileSync } = await import('./shared.js');
+    atomicWriteFileSync(
+      blacklistFile,
+      JSON.stringify({ relays: blacklist, updatedAt: Date.now() }, null, 2)
+    );
+
+    // Update stats
+    if (fs.existsSync(RELAY_STATS_FILE)) {
+      const stats = JSON.parse(fs.readFileSync(RELAY_STATS_FILE, 'utf8'));
+      if (!stats[normalizedUrl]) {
+        stats[normalizedUrl] = {};
+      }
+      stats[normalizedUrl].blacklisted = true;
+      atomicWriteFileSync(RELAY_STATS_FILE, JSON.stringify(stats, null, 2));
+    }
+
+    return {
+      ok: true,
+      relay: normalizedUrl,
+      blacklisted: !alreadyBlacklisted,
+      message: alreadyBlacklisted ? 'Relay was already blacklisted' : 'Relay blacklisted'
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err.message
+    };
+  }
+}

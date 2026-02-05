@@ -363,10 +363,13 @@ export class NostrNetwork {
   /**
    * Publish message to Nostr network
    * @param {Message} payload - Message content
-   * @returns {Promise<void>}
+   * @param {Object} options - Publish options
+   * @param {boolean} [options.multiPath=false] - Use multi-path publishing
+   * @param {number} [options.multiPathCount=3] - Number of relays for multi-path
+   * @returns {Promise<{success: boolean, relays: Array, errors: Array}>}
    * @throws {Error} If publish fails
    */
-  async publish(payload) {
+  async publish(payload, options = {}) {
     if (!this.isConnected && payload.type !== '_ping') {
       throw new Error('Not connected to network')
     }
@@ -381,12 +384,68 @@ export class NostrNetwork {
       this.identity.secretKey
     )
 
+    const { multiPath = false, multiPathCount = 3 } = options
+
+    if (multiPath) {
+      return await this._publishMultiPath(event, multiPathCount)
+    }
+
     try {
       await Promise.any(this.pool.publish(this.relays, event))
       log.debug('Published message', { type: payload.type })
+      return { success: true, relays: this.relays, errors: [] }
     } catch (err) {
       log.error('Failed to publish message', { type: payload.type, error: err.message })
       throw new Error(`Failed to publish: ${err.message}`)
+    }
+  }
+
+  /**
+   * Publish to multiple relays simultaneously for reliability
+   * @private
+   * @param {Object} event - Nostr event
+   * @param {number} count - Number of relays to use
+   * @returns {Promise<Object>} Publish result
+   */
+  async _publishMultiPath(event, count = 3) {
+    const selectedRelays = this.relays.slice(0, count)
+    const results = []
+
+    // Publish to each selected relay simultaneously
+    const publishPromises = selectedRelays.map(relay =>
+      this.pool.publish([relay], event)
+        .then(() => ({ relay, success: true }))
+        .catch(err => ({ relay, success: false, error: err.message }))
+    )
+
+    const publishResults = await Promise.allSettled(publishPromises)
+
+    for (const result of publishResults) {
+      if (result.status === 'fulfilled') {
+        results.push(result.value)
+      }
+    }
+
+    const successful = results.filter(r => r.success)
+    const failed = results.filter(r => !r.success)
+
+    log.debug('Multi-path publish result', {
+      total: selectedRelays.length,
+      successful: successful.length,
+      failed: failed.length
+    })
+
+    // Consider success if at least one relay succeeded
+    if (successful.length === 0) {
+      throw new Error(`All ${selectedRelays.length} relays failed to publish`)
+    }
+
+    return {
+      success: true,
+      relays: selectedRelays,
+      successfulRelays: successful.map(r => r.relay),
+      failedRelays: failed.map(r => r.relay),
+      errors: failed.map(r => r.error)
     }
   }
 

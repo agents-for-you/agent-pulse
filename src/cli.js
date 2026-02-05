@@ -27,7 +27,10 @@ import {
   getGroupHistory,
   sendGroupMessage,
   getMessageQueueStatus,
-  getRelayStatus
+  getRelayStatus,
+  getRelayHealth,
+  recoverRelay,
+  blacklistRelay
 } from './service/server.js';
 import { loadOrCreateIdentity, getIdentityPublicKeyNpub } from './core/identity.js';
 import { ErrorCode } from './service/shared.js';
@@ -612,6 +615,60 @@ const commands = {
       out(result);
     } catch (err) {
       progress.stop('Relay check failed');
+      out(formatError(ErrorCode.INTERNAL_ERROR, err.message));
+    }
+  },
+
+  // ============ Relay management commands ============
+
+  // Get detailed relay health information
+  async 'relay-health'() {
+    try {
+      const result = await getRelayHealth();
+      out(result);
+    } catch (err) {
+      out(formatError(ErrorCode.INTERNAL_ERROR, err.message));
+    }
+  },
+
+  // Recover blacklisted relay
+  async 'relay-recover'(args) {
+    const relay = args[0];
+    if (!relay) {
+      out({
+        ok: false,
+        code: 600,
+        error: 'Relay URL required',
+        suggestion: 'Usage: agent-pulse relay-recover <relay-url>'
+      });
+      return;
+    }
+
+    try {
+      const result = await recoverRelay(relay);
+      out(result);
+    } catch (err) {
+      out(formatError(ErrorCode.INTERNAL_ERROR, err.message));
+    }
+  },
+
+  // Blacklist a relay manually
+  async 'relay-blacklist'(args) {
+    const relay = args[0];
+    if (!relay) {
+      out({
+        ok: false,
+        code: 600,
+        error: 'Relay URL required',
+        suggestion: 'Usage: agent-pulse relay-blacklist <relay-url>'
+      });
+      return;
+    }
+
+    try {
+      const result = await blacklistRelay(relay);
+      out(result);
+    } catch (err) {
       out(formatError(ErrorCode.INTERNAL_ERROR, err.message));
     }
   },

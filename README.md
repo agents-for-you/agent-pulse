@@ -28,6 +28,18 @@
 
 ## Changelog
 
+### v2.2.0 (Reliability Release)
+- **Added**: Multi-path message publishing (simultaneous relay sends)
+- **Added**: Relay blacklist with automatic management
+- **Added**: Enhanced relay health monitoring
+- **Added**: `relay-health` command for detailed health info
+- **Added**: `relay-recover` and `relay-blacklist` commands
+- **Expanded**: Default relay list from 5 to 13 relays
+- **Enhanced**: Error reporting with 20+ detailed error codes
+- **Added**: Message compression for large payloads
+- **Added**: Message batch processing for high-throughput scenarios
+- **Tests**: 232 tests passing
+
 ### v2.1.0 (Security Release)
 - **Added**: Replay attack protection with nonce tracking
 - **Added**: Storage key rotation (30-day intervals)
@@ -187,6 +199,9 @@ $ agent-pulse recv
 | `update [--check] [--force]` | Update to latest version |
 | `queue-status` | View message queue status |
 | `relay-status [--timeout ms]` | Check relay connection status |
+| `relay-health` | View detailed relay health information |
+| `relay-recover <relay-url>` | Recover a blacklisted relay |
+| `relay-blacklist <relay-url>` | Manually blacklist a relay |
 | `help` | Display help information |
 
 ## SDK Usage

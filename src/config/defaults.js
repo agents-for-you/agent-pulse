@@ -11,14 +11,27 @@ export const DEFAULT_IDENTITY_FILE = '.agent-identity.json'
 
 /**
  * Default Nostr Relay list
+ * Expanded list for reliability - includes major public relays
  * @constant {string[]}
  */
 export const DEFAULT_RELAYS = [
+  // Primary relays (stable, high uptime)
   'wss://relay.nostr.band',
   'wss://relay.snort.social',
-  'wss://nostr-pub.wellorder.net',
+  'wss://nos.lol',
+  'wss://nostr.wine',
+
+  // Secondary relays (backup)
   'wss://offchain.pub',
-  'wss://nostr.mutinywallet.com'
+  'wss://nostr-pub.wellorder.net',
+  'wss://nostr.mutinywallet.com',
+  'wss://relay.damus.io',
+
+  // Additional relays for redundancy
+  'wss://brb.io',
+  'wss://relay.current.org',
+  'wss://purplepag.es',
+  'wss://relay.orangesolar.pro'
 ]
 
 /**
@@ -54,7 +67,22 @@ export const NETWORK_CONFIG = {
   MAX_PEERS: 100,
 
   /** Message history time window (seconds) */
-  MESSAGE_HISTORY_SECONDS: 300
+  MESSAGE_HISTORY_SECONDS: 300,
+
+  /** Minimum healthy relays required */
+  MIN_HEALTHY_RELAYS: 2,
+
+  /** Multi-path: publish to N relays simultaneously */
+  MULTI_PATH_COUNT: 3,
+
+  /** Health check interval (ms) */
+  HEALTH_CHECK_INTERVAL: 60000,
+
+  /** Relay blacklist threshold (consecutive failures before blacklist) */
+  BLACKLIST_THRESHOLD: 10,
+
+  /** Relay recovery attempts (attempts to recover a blacklisted relay) */
+  RECOVERY_ATTEMPTS: 3
 }
 
 /**
