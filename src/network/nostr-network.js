@@ -88,18 +88,32 @@ export class NostrNetwork {
     this.reconnectTimer = null
     this.relayHealth = new Map()
 
-    // Initialize relay health tracking
+    // Circuit breaker: track relays that should be temporarily skipped
+    this.circuitBreaker = new Map() // relay -> { openUntil: timestamp, failureCount: number }
+    this.CIRCUIT_BREAKER_THRESHOLD = 5 // consecutive failures before opening
+    this.CIRCUIT_BREAKER_TIMEOUT = 60000 // 1 minute before retry
+
+    // Initialize relay health tracking with adaptive timeout
     for (const relay of relays) {
       this.relayHealth.set(relay, {
         successCount: 0,
         failureCount: 0,
+        consecutiveFailures: 0,
         lastSuccess: null,
         lastFailure: null,
         lastLatency: null,
         avgLatency: null,
+        p95Latency: null, // 95th percentile latency
+        p99Latency: null, // 99th percentile latency
+        adaptiveTimeout: connectionTimeout, // Per-relay timeout
         score: 100 // Initial score, decreases with failures
       })
+      this.circuitBreaker.set(relay, { openUntil: 0, failureCount: 0 })
     }
+
+    // Latency history for percentile calculation
+    this.latencyHistory = new Map() // relay -> [latencies]
+    this.MAX_LATENCY_SAMPLES = 50
   }
 
   /**
@@ -121,14 +135,49 @@ export class NostrNetwork {
   }
 
   /**
-   * Get healthy relays (score > 30)
+   * Get healthy relays (score > 30, circuit breaker closed)
    * @returns {string[]} Healthy relay list
    */
   getHealthyRelays() {
     return this.getSortedRelays().filter(relay => {
       const health = this.relayHealth.get(relay)
-      return health && health.score > 30
+      const breaker = this.circuitBreaker.get(relay)
+      if (!health || !breaker) return false
+      const breakerOpen = Date.now() < breaker.openUntil
+      return health.score > 30 && !breakerOpen
     })
+  }
+
+  /**
+   * Check if relay circuit breaker is open
+   * @private
+   * @param {string} relay - Relay URL
+   * @returns {boolean} True if circuit breaker is open
+   */
+  _isCircuitBreakerOpen(relay) {
+    const breaker = this.circuitBreaker.get(relay)
+    if (!breaker) return false
+    // Auto-reset after timeout
+    if (breaker.openUntil > 0 && Date.now() >= breaker.openUntil) {
+      breaker.openUntil = 0
+      breaker.failureCount = 0
+      log.info('Circuit breaker auto-reset', { relay })
+      return false
+    }
+    return breaker.openUntil > 0
+  }
+
+  /**
+   * Get relays with adaptive timeout
+   * Returns map of relay -> calculated timeout
+   * @returns {Map<string, number>} Relay to timeout mapping
+   */
+  getAdaptiveTimeouts() {
+    const timeouts = new Map()
+    for (const [relay, health] of this.relayHealth.entries()) {
+      timeouts.set(relay, health.adaptiveTimeout)
+    }
+    return timeouts
   }
 
   /**
@@ -139,23 +188,58 @@ export class NostrNetwork {
    */
   _recordSuccess(relay, latency = 0) {
     const health = this.relayHealth.get(relay)
-    if (!health) return
+    const breaker = this.circuitBreaker.get(relay)
+    if (!health || !breaker) return
 
     health.successCount++
+    health.consecutiveFailures = 0
     health.lastSuccess = Date.now()
     health.lastLatency = latency
 
-    // Update average latency
+    // Reset circuit breaker on success
+    breaker.failureCount = 0
+    breaker.openUntil = 0
+
+    // Update latency history for percentile calculation
+    let history = this.latencyHistory.get(relay)
+    if (!history) {
+      history = []
+      this.latencyHistory.set(relay, history)
+    }
+    history.push(latency)
+    if (history.length > this.MAX_LATENCY_SAMPLES) {
+      history.shift()
+    }
+
+    // Calculate percentiles
+    const sorted = [...history].sort((a, b) => a - b)
+    const p95Index = Math.floor(sorted.length * 0.95)
+    const p99Index = Math.floor(sorted.length * 0.99)
+    health.p95Latency = sorted[p95Index] || latency
+    health.p99Latency = sorted[p99Index] || latency
+
+    // Update average latency (exponential moving average)
     if (health.avgLatency === null) {
       health.avgLatency = latency
     } else {
       health.avgLatency = Math.round((health.avgLatency * 0.8) + (latency * 0.2))
     }
 
+    // Update adaptive timeout (p99 + 50% margin, minimum 5000ms)
+    const calculatedTimeout = Math.max(5000, Math.round(health.p99Latency * 1.5))
+    health.adaptiveTimeout = Math.min(calculatedTimeout, this.connectionTimeout * 2)
+
     // Increase score (max 100)
     health.score = Math.min(100, health.score + 5)
 
-    log.debug('Relay success', { relay, score: health.score, latency })
+    log.debug('Relay success', {
+      relay,
+      score: health.score,
+      latency,
+      avgLatency: health.avgLatency,
+      p99Latency: health.p99Latency,
+      adaptiveTimeout: health.adaptiveTimeout
+    })
   }
 
   /**
@@ -166,10 +250,19 @@ export class NostrNetwork {
    */
   _recordFailure(relay, error) {
     const health = this.relayHealth.get(relay)
-    if (!health) return
+    const breaker = this.circuitBreaker.get(relay)
+    if (!health || !breaker) return
 
     health.failureCount++
+    health.consecutiveFailures++
     health.lastFailure = Date.now()
+
+    // Update circuit breaker
+    breaker.failureCount++
+    if (breaker.failureCount >= this.CIRCUIT_BREAKER_THRESHOLD) {
+      breaker.openUntil = Date.now() + this.CIRCUIT_BREAKER_TIMEOUT
+      log.warn('Circuit breaker opened', { relay, timeout: this.CIRCUIT_BREAKER_TIMEOUT })
+    }
 
     // Decrease score based on error type
     if (error?.includes('ENOTFOUND') || error?.includes('ECONNREFUSED')) {
@@ -182,7 +275,7 @@ export class NostrNetwork {
 
     health.score = Math.max(0, health.score)
 
-    log.debug('Relay failure', { relay, score: health.score, error })
+    log.debug('Relay failure', { relay, score: health.score, consecutive: health.consecutiveFailures, error })
   }
 
   /**
@@ -339,6 +432,7 @@ export class NostrNetwork {
 
   /**
    * Wait for connection to be established with individual relay tracking
+   * Skips relays with open circuit breakers
    * @private
    * @param {number} timeout - Timeout
    * @returns {Promise<void>}
@@ -347,13 +441,33 @@ export class NostrNetwork {
     const startTime = Date.now()
     const sortedRelays = this.getSortedRelays()
 
+    // Filter out relays with open circuit breakers
+    const availableRelays = sortedRelays.filter(relay => !this._isCircuitBreakerOpen(relay))
+
+    if (availableRelays.length === 0) {
+      log.warn('All relays have circuit breakers open, resetting')
+      // Emergency reset: close all circuit breakers
+      for (const breaker of this.circuitBreaker.values()) {
+        breaker.openUntil = 0
+        breaker.failureCount = 0
+      }
+    }
+
+    const relaysToTry = availableRelays.length > 0 ? availableRelays : sortedRelays.slice(0, 3)
+
     log.debug('Attempting connection (sorted by health)', {
-      relays: sortedRelays.length,
-      top3: sortedRelays.slice(0, 3)
+      total: sortedRelays.length,
+      available: availableRelays.length,
+      trying: relaysToTry.length,
+      skipped: sortedRelays.length - relaysToTry.length,
+      top3: relaysToTry.slice(0, 3)
     })
 
     // Try each relay individually to track results
-    const connectionPromises = sortedRelays.map(relay => {
+    const connectionPromises = relaysToTry.map(relay => {
+      const health = this.relayHealth.get(relay)
+      const relayTimeout = health?.adaptiveTimeout || timeout
+
       const testEvent = finalizeEvent(
         {
           kind: AGENT_KIND,
@@ -364,7 +478,13 @@ export class NostrNetwork {
         this.identity.secretKey
       )
 
-      return this.pool.publish([relay], testEvent)
+      // Use per-relay adaptive timeout with Promise.race for individual timeout
+      return Promise.race([
+        this.pool.publish([relay], testEvent),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('timeout')), relayTimeout)
+        )
+      ])
         .then(() => {
           const latency = Date.now() - startTime
           this._recordSuccess(relay, latency)
@@ -376,7 +496,7 @@ export class NostrNetwork {
         })
     })
 
-    // Wait for first success or timeout
+    // Wait for first success or global timeout
     const result = await Promise.race([
       Promise.any(connectionPromises.filter(p => p.then(r => r.success))),
       new Promise((_, reject) =>

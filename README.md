@@ -28,6 +28,15 @@
 
 ## Changelog
 
+### v2.4.0 (Circuit Breaker & Adaptive Timeout)
+- **Added**: Circuit breaker pattern for relay failure handling
+- **Added**: Adaptive timeout per relay based on p99 latency
+- **Added**: Per-relay timeout calculation (p99 + 50% margin)
+- **Enhanced**: Connection attempts skip relays with open circuit breakers
+- **Added**: Latency percentile tracking (p95, p99)
+- **Improved**: Multi-path publishing respects circuit breaker state
+- **Result**: Faster connection establishment, fewer wasted attempts
+
 ### v2.3.0 (Verified Relay List)
 - **Optimized**: Relay list reduced to 9 verified working relays
 - **Removed**: Non-functional relays (cheeserobot.io, free.nostr.lc SSL issue, etc.)
