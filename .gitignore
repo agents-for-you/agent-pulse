@@ -50,3 +50,6 @@ temp/
 
 # OS files
 Thumbs.db
+
+# Skills definitions (auto-generated)
+skills/
