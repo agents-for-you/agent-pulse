@@ -3,8 +3,10 @@ node_modules/
 
 # Identity and data files
 .agent-identity.json
+.agent-contacts.json
 .agent-data/
 .data/
+*.pid
 
 # Logs
 *.log
