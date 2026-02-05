@@ -4,13 +4,10 @@
  */
 
 import { SimplePool, finalizeEvent, verifyEvent } from 'nostr-tools'
-import { useWebSocketImplementation } from 'nostr-tools/pool'
 import WebSocket from 'ws'
 import { DEFAULT_RELAYS, DEFAULT_TOPIC, NETWORK_CONFIG } from '../config/defaults.js'
 import { logger } from '../utils/logger.js'
 import { LRUCache } from '../service/shared.js'
-
-useWebSocketImplementation(WebSocket)
 
 const log = logger.child('network')
 
@@ -87,6 +84,10 @@ export class NostrNetwork {
     this.isConnected = false
     this.reconnectTimer = null
     this.relayHealth = new Map()
+
+    // Custom WebSocket subscriptions (fallback for nostr-tools subscription issues)
+    this.wsSubscriptions = new Map() // relay -> WebSocket instance
+    this.useDirectSubscription = true // Use direct WebSocket subscriptions for receiving
 
     // Circuit breaker: track relays that should be temporarily skipped
     this.circuitBreaker = new Map() // relay -> { openUntil: timestamp, failureCount: number }
@@ -405,24 +406,30 @@ export class NostrNetwork {
 
     log.info('Connecting to Nostr network', {
       relays: this.relays.length,
-      topic: this.topic
+      topic: this.topic,
+      useDirectSubscription: this.useDirectSubscription
     })
 
     try {
-      // Create subscription
-      this.sub = this.pool.subscribeMany(this.relays, [filter], {
-        onevent: (event) => this._handleEvent(event),
-        oneose: () => {
-          log.debug('End of stored events')
-        },
-        onclose: (reasons) => {
-          log.warn('Subscription closed', { reasons })
-          this._handleDisconnect()
-        }
-      })
+      if (this.useDirectSubscription) {
+        // Use direct WebSocket subscription (more reliable)
+        await this._subscribeDirect(filter, timeout)
+      } else {
+        // Use nostr-tools SimplePool subscription (has issues)
+        this.sub = this.pool.subscribeMany(this.relays, [filter], {
+          onevent: (event) => this._handleEvent(event),
+          oneose: () => {
+            log.debug('End of stored events')
+          },
+          onclose: (reasons) => {
+            log.warn('Subscription closed', { reasons })
+            this._handleDisconnect()
+          }
+        })
 
-      // Wait for at least one relay response (with timeout)
-      await this._waitForConnection(timeout)
+        // Wait for at least one relay response (with timeout)
+        await this._waitForConnection(timeout)
+      }
 
       this.isConnected = true
       this.reconnectAttempt = 0 // Reset reconnect counter on successful connection
@@ -436,6 +443,133 @@ export class NostrNetwork {
       this._handleDisconnect()
       throw err
     }
+  }
+
+  /**
+   * Subscribe to relays using direct WebSocket connections
+   * This bypasses nostr-tools subscription issues
+   * @private
+   * @param {Object} filter - Nostr filter
+   * @param {number} timeout - Connection timeout
+   * @returns {Promise<void>}
+   */
+  async _subscribeDirect(filter, timeout) {
+    const subscriptionId = `sub-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    let connectedCount = 0
+    const requiredConnections = Math.max(1, Math.floor(this.relays.length / 2))
+
+    const connectionPromises = this.relays.map(relay => {
+      return new Promise((resolve) => {
+        const ws = new WebSocket(relay, {
+          handshakeTimeout: timeout
+        })
+
+        const subscriptionTimeout = setTimeout(() => {
+          if (ws.readyState !== WebSocket.OPEN) {
+            ws.terminate()
+            this._updateRelayHealth(relay, false, null, 'connection timeout')
+            resolve(false)
+          }
+        }, timeout)
+
+        ws.on('open', () => {
+          clearTimeout(subscriptionTimeout)
+          this._recordSuccess(relay, 0)
+          log.debug('WebSocket connected', { relay })
+
+          // Send subscription request (NIP-01 REQ message)
+          const reqMessage = JSON.stringify(['REQ', subscriptionId, filter])
+          ws.send(reqMessage)
+          log.debug('Sent REQ', { relay, filter })
+
+          connectedCount++
+          if (connectedCount >= requiredConnections) {
+            resolve(true)
+          }
+        })
+
+        ws.on('message', (data) => {
+          try {
+            const message = JSON.parse(data.toString())
+            const [type, ...rest] = message
+
+            switch (type) {
+              case 'EVENT':
+                const [, subId, event] = message
+                if (subId === subscriptionId) {
+                  this._handleEvent(event)
+                }
+                break
+
+              case 'EOSE':
+                log.debug('EOSE received', { relay })
+                break
+
+              case 'NOTICE':
+                const notice = rest[0]
+                if (notice.includes('ERROR') || notice.includes('error')) {
+                  log.warn('Relay notice', { relay, notice })
+                } else {
+                  log.debug('Relay notice', { relay, notice })
+                }
+                break
+
+              case 'OK':
+                // Event publish confirmation
+                const [, eventId, ok, reason] = message
+                if (!ok) {
+                  log.warn('Event rejected', { relay, eventId, reason })
+                }
+                break
+            }
+          } catch (err) {
+            log.debug('Failed to parse message', { error: err.message })
+          }
+        })
+
+        ws.on('error', (err) => {
+          clearTimeout(subscriptionTimeout)
+          log.warn('WebSocket error', { relay, error: err.message })
+          this._recordFailure(relay, err.message)
+          resolve(false)
+        })
+
+        ws.on('close', () => {
+          clearTimeout(subscriptionTimeout)
+          log.debug('WebSocket closed', { relay })
+          this.wsSubscriptions.delete(relay)
+        })
+
+        this.wsSubscriptions.set(relay, { ws, subscriptionId })
+      })
+    })
+
+    // Wait for at least requiredConnections
+    await Promise.race([
+      Promise.all(connectionPromises),
+      new Promise(resolve => setTimeout(resolve, timeout))
+    ])
+
+    if (connectedCount < requiredConnections) {
+      log.warn('Partial connection', { connected: connectedCount, required: requiredConnections })
+    }
+  }
+
+  /**
+   * Close all WebSocket subscriptions
+   * @private
+   */
+  _closeWsSubscriptions() {
+    for (const [relay, { ws }] of this.wsSubscriptions) {
+      try {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.close()
+        }
+      } catch (err) {
+        log.debug('Error closing WebSocket', { relay, error: err.message })
+      }
+    }
+    this.wsSubscriptions.clear()
   }
 
   /**
@@ -959,6 +1093,9 @@ export class NostrNetwork {
       this.sub.close()
       this.sub = null
     }
+
+    // Close direct WebSocket subscriptions
+    this._closeWsSubscriptions()
 
     this.pool.close(this.relays)
     this.isConnected = false

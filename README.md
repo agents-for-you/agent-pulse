@@ -28,6 +28,13 @@
 
 ## Changelog
 
+### v2.7.0 (Nostr Subscription Fix)
+- **Fixed**: Critical bug preventing message reception
+- **Added**: Custom WebSocket subscription implementation to bypass nostr-tools subscription issues
+- **Root Cause**: nostr-tools v2 `subscribeMany()` not receiving events despite successful connection
+- **Solution**: Direct WebSocket connections with NIP-01 compliant REQ/EVENT messages
+- **Result**: P2P messaging now works correctly, messages are being received
+
 ### v2.6.0 (Contacts Feature)
 - **Added**: Contacts/address book management with aliases
 - **Added**: CLI commands `contacts`, `contacts-add`, `contacts-remove`, `contacts-get`, `contacts-export`, `contacts-import`, `contacts-find`
