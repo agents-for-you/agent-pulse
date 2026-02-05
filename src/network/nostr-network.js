@@ -87,6 +87,122 @@ export class NostrNetwork {
     this.isConnected = false
     this.reconnectTimer = null
     this.relayHealth = new Map()
+
+    // Initialize relay health tracking
+    for (const relay of relays) {
+      this.relayHealth.set(relay, {
+        successCount: 0,
+        failureCount: 0,
+        lastSuccess: null,
+        lastFailure: null,
+        lastLatency: null,
+        avgLatency: null,
+        score: 100 // Initial score, decreases with failures
+      })
+    }
+  }
+
+  /**
+   * Get relays sorted by health score (best first)
+   * @returns {string[]} Sorted relay list
+   */
+  getSortedRelays() {
+    return [...this.relayHealth.entries()]
+      .sort(([, a], [, b]) => {
+        // First prioritize by score
+        if (a.score !== b.score) return b.score - a.score
+        // Then by recency of success
+        if (a.lastSuccess && b.lastSuccess) {
+          return b.lastSuccess - a.lastSuccess
+        }
+        return a.lastSuccess ? -1 : 1
+      })
+      .map(([relay]) => relay)
+  }
+
+  /**
+   * Get healthy relays (score > 30)
+   * @returns {string[]} Healthy relay list
+   */
+  getHealthyRelays() {
+    return this.getSortedRelays().filter(relay => {
+      const health = this.relayHealth.get(relay)
+      return health && health.score > 30
+    })
+  }
+
+  /**
+   * Record relay connection success
+   * @private
+   * @param {string} relay - Relay URL
+   * @param {number} latency - Connection latency in ms
+   */
+  _recordSuccess(relay, latency = 0) {
+    const health = this.relayHealth.get(relay)
+    if (!health) return
+
+    health.successCount++
+    health.lastSuccess = Date.now()
+    health.lastLatency = latency
+
+    // Update average latency
+    if (health.avgLatency === null) {
+      health.avgLatency = latency
+    } else {
+      health.avgLatency = Math.round((health.avgLatency * 0.8) + (latency * 0.2))
+    }
+
+    // Increase score (max 100)
+    health.score = Math.min(100, health.score + 5)
+
+    log.debug('Relay success', { relay, score: health.score, latency })
+  }
+
+  /**
+   * Record relay connection failure
+   * @private
+   * @param {string} relay - Relay URL
+   * @param {string} error - Error message
+   */
+  _recordFailure(relay, error) {
+    const health = this.relayHealth.get(relay)
+    if (!health) return
+
+    health.failureCount++
+    health.lastFailure = Date.now()
+
+    // Decrease score based on error type
+    if (error?.includes('ENOTFOUND') || error?.includes('ECONNREFUSED')) {
+      health.score -= 15 // Permanent errors hurt more
+    } else if (error?.includes('timeout') || error?.includes('502')) {
+      health.score -= 5 // Temporary errors
+    } else {
+      health.score -= 10 // Other errors
+    }
+
+    health.score = Math.max(0, health.score)
+
+    log.debug('Relay failure', { relay, score: health.score, error })
+  }
+
+  /**
+   * Get relay health status
+   * @returns {Object} Relay health info
+   */
+  getRelayHealth() {
+    const result = {}
+    for (const [relay, health] of this.relayHealth.entries()) {
+      result[relay] = {
+        score: health.score,
+        successRate: health.successCount + health.failureCount > 0
+          ? Math.round((health.successCount / (health.successCount + health.failureCount)) * 100)
+          : null,
+        avgLatency: health.avgLatency,
+        lastSuccess: health.lastSuccess,
+        isHealthy: health.score > 30
+      }
+    }
+    return result
   }
 
   /**
@@ -222,18 +338,22 @@ export class NostrNetwork {
   }
 
   /**
-   * Wait for connection to be established
+   * Wait for connection to be established with individual relay tracking
    * @private
    * @param {number} timeout - Timeout
    * @returns {Promise<void>}
    */
   async _waitForConnection(timeout) {
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        reject(new Error(`Connection timeout after ${timeout}ms`))
-      }, timeout)
+    const startTime = Date.now()
+    const sortedRelays = this.getSortedRelays()
 
-      // Try to send a test event to verify connection
+    log.debug('Attempting connection (sorted by health)', {
+      relays: sortedRelays.length,
+      top3: sortedRelays.slice(0, 3)
+    })
+
+    // Try each relay individually to track results
+    const connectionPromises = sortedRelays.map(relay => {
       const testEvent = finalizeEvent(
         {
           kind: AGENT_KIND,
@@ -244,16 +364,43 @@ export class NostrNetwork {
         this.identity.secretKey
       )
 
-      Promise.any(this.pool.publish(this.relays, testEvent))
+      return this.pool.publish([relay], testEvent)
         .then(() => {
-          clearTimeout(timer)
-          resolve()
+          const latency = Date.now() - startTime
+          this._recordSuccess(relay, latency)
+          return { relay, success: true, latency }
         })
-        .catch((err) => {
-          clearTimeout(timer)
-          reject(new Error(`All relays failed: ${err.message}`))
+        .catch(err => {
+          this._recordFailure(relay, err.message)
+          return { relay, success: false, error: err.message }
         })
     })
+
+    // Wait for first success or timeout
+    const result = await Promise.race([
+      Promise.any(connectionPromises.filter(p => p.then(r => r.success))),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error(`Connection timeout after ${timeout}ms`)), timeout)
+      )
+    ]).catch(() => ({ success: false }))
+
+    if (result.success) {
+      log.info('Connection established', { relay: result.relay, latency: result.latency })
+      return
+    }
+
+    // Check if any relay succeeded
+    const results = await Promise.allSettled(connectionPromises)
+    const successes = results.filter(r => r.status === 'fulfilled' && r.value.success)
+
+    if (successes.length > 0) {
+      log.info('Connection established (after timeout)', {
+        relays: successes.map(s => s.value.relay)
+      })
+      return
+    }
+
+    throw new Error('All relays failed to connect')
   }
 
   /**
@@ -402,20 +549,35 @@ export class NostrNetwork {
 
   /**
    * Publish to multiple relays simultaneously for reliability
+   * Uses healthy relays first based on health tracking
    * @private
    * @param {Object} event - Nostr event
    * @param {number} count - Number of relays to use
    * @returns {Promise<Object>} Publish result
    */
   async _publishMultiPath(event, count = 3) {
-    const selectedRelays = this.relays.slice(0, count)
+    // Use healthy relays first, then fall back to sorted relays
+    const healthyRelays = this.getHealthyRelays()
+    const sortedRelays = this.getSortedRelays()
+    const selectedRelays = healthyRelays.length >= count
+      ? healthyRelays.slice(0, count)
+      : sortedRelays.slice(0, count)
+
     const results = []
+    const startTime = Date.now()
 
     // Publish to each selected relay simultaneously
     const publishPromises = selectedRelays.map(relay =>
       this.pool.publish([relay], event)
-        .then(() => ({ relay, success: true }))
-        .catch(err => ({ relay, success: false, error: err.message }))
+        .then(() => {
+          const latency = Date.now() - startTime
+          this._recordSuccess(relay, latency)
+          return { relay, success: true, latency }
+        })
+        .catch(err => {
+          this._recordFailure(relay, err.message)
+          return { relay, success: false, error: err.message }
+        })
     )
 
     const publishResults = await Promise.allSettled(publishPromises)
@@ -432,7 +594,10 @@ export class NostrNetwork {
     log.debug('Multi-path publish result', {
       total: selectedRelays.length,
       successful: successful.length,
-      failed: failed.length
+      failed: failed.length,
+      avgLatency: successful.length > 0
+        ? Math.round(successful.reduce((s, r) => s + r.latency, 0) / successful.length)
+        : null
     })
 
     // Consider success if at least one relay succeeded

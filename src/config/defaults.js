@@ -28,10 +28,10 @@ export const DEFAULT_RELAYS = [
   'wss://relay.damus.io',
 
   // Additional relays for redundancy
-  'wss://brb.io',
   'wss://relay.current.org',
   'wss://purplepag.es',
-  'wss://relay.orangesolar.pro'
+  'wss://nostr.frog.wtf',
+  'wss://relay.primal.net'
 ]
 
 /**

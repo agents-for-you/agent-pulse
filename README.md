@@ -28,6 +28,11 @@
 
 ## Changelog
 
+### v2.2.1 (Relay Optimization)
+- **Removed**: Failing relays (brb.io, relay.orangesolar.pro)
+- **Added**: Primal.net and nostr.frog.wtf relays
+- **Improved**: Relay list quality for better connectivity
+
 ### v2.2.0 (Reliability Release)
 - **Added**: Multi-path message publishing (simultaneous relay sends)
 - **Added**: Relay blacklist with automatic management
