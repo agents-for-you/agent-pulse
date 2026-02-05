@@ -11,27 +11,32 @@ export const DEFAULT_IDENTITY_FILE = '.agent-identity.json'
 
 /**
  * Default Nostr Relay list
- * Expanded list for reliability - includes major public relays
+ * Curated list of reliable public relays with high uptime
+ * Last updated: 2026-02-05
  * @constant {string[]}
  */
 export const DEFAULT_RELAYS = [
-  // Primary relays (stable, high uptime)
-  'wss://relay.nostr.band',
-  'wss://relay.snort.social',
-  'wss://nos.lol',
-  'wss://nostr.wine',
+  // Primary relays (verified high uptime)
+  'wss://relay.nostr.band',        // NostrBand - full index, spam filtered
+  'wss://nos.lol',                  // nos.lol - popular, stable
+  'wss://relay.damus.io',           // Damus - iOS app relay
+  'wss://relay.snort.social',       // Snort - web client relay
 
-  // Secondary relays (backup)
-  'wss://offchain.pub',
-  'wss://nostr-pub.wellorder.net',
-  'wss://nostr.mutinywallet.com',
-  'wss://relay.damus.io',
+  // nostrlc relays (professional service)
+  'wss://free.nostr.lc',            // nostrlc free tier
 
-  // Additional relays for redundancy
-  'wss://relay.current.org',
-  'wss://purplepag.es',
-  'wss://nostr.frog.wtf',
-  'wss://relay.primal.net'
+  // Community relays with good uptime
+  'wss://nostr.wine',               // wine relay
+  'wss://purplepag.es',             // purplepages
+  'wss://offchain.pub',             // offchain
+
+  // Additional redundancy
+  'wss://nostr-pub.wellorder.net',  // wellorder
+  'wss://relay.primal.net',         // Primal web app
+
+  // Backup/experimental (lower priority)
+  'wss://nostr.frog.wtf',           // frog (experimental)
+  'wss://relay.cheeserobot.io'      // alternative relay
 ]
 
 /**

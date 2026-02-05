@@ -28,6 +28,13 @@
 
 ## Changelog
 
+### v2.2.2 (Smart Relay Selection)
+- **Added**: Smart relay health tracking with scoring system
+- **Enhanced**: Connection attempts use healthy relays first
+- **Enhanced**: Multi-path publishing prioritizes healthy relays
+- **Added**: Per-relay success/failure tracking with adaptive scoring
+- **Updated**: Relay list with verified high-uptime relays (nostrlc, etc.)
+
 ### v2.2.1 (Relay Optimization)
 - **Removed**: Failing relays (brb.io, relay.orangesolar.pro)
 - **Added**: Primal.net and nostr.frog.wtf relays
