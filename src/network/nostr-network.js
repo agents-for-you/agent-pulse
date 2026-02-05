@@ -93,6 +93,13 @@ export class NostrNetwork {
     this.CIRCUIT_BREAKER_THRESHOLD = 5 // consecutive failures before opening
     this.CIRCUIT_BREAKER_TIMEOUT = 60000 // 1 minute before retry
 
+    // Exponential backoff configuration
+    this.reconnectAttempt = 0
+    this.RECONNECT_BACKOFF_BASE = 1000 // 1 second base
+    this.RECONNECT_BACKOFF_MAX = 60000 // 60 seconds max
+    this.RECONNECT_BACKOFF_MULTIPLIER = 2
+    this.JITTER_RATIO = 0.2 // 20% jitter
+
     // Initialize relay health tracking with adaptive timeout
     for (const relay of relays) {
       this.relayHealth.set(relay, {
@@ -418,6 +425,7 @@ export class NostrNetwork {
       await this._waitForConnection(timeout)
 
       this.isConnected = true
+      this.reconnectAttempt = 0 // Reset reconnect counter on successful connection
       log.info('Connected to Nostr network')
 
       // Send announce message
@@ -524,19 +532,57 @@ export class NostrNetwork {
   }
 
   /**
-   * Handle disconnect
+   * Handle disconnect with exponential backoff
    * @private
    */
   _handleDisconnect() {
     this.isConnected = false
 
     if (this.autoReconnect && !this.reconnectTimer) {
-      log.info('Scheduling reconnect', { interval: this.reconnectInterval })
+      // Calculate exponential backoff with jitter
+      const backoffMs = this._calculateBackoff()
+      const jitterMs = this._addJitter(backoffMs)
+      const totalDelay = backoffMs + jitterMs
+
+      log.info('Scheduling reconnect', {
+        attempt: this.reconnectAttempt + 1,
+        backoff: backoffMs,
+        jitter: jitterMs,
+        total: totalDelay
+      })
+
       this.reconnectTimer = setTimeout(() => {
         this.reconnectTimer = null
+        this.reconnectAttempt++
         this._attemptReconnect()
-      }, this.reconnectInterval)
+      }, totalDelay)
     }
+  }
+
+  /**
+   * Calculate exponential backoff delay
+   * @private
+   * @returns {number} Backoff delay in ms
+   */
+  _calculateBackoff() {
+    // Exponential backoff: base * (multiplier ^ attempt)
+    const backoff = this.RECONNECT_BACKOFF_BASE *
+      Math.pow(this.RECONNECT_BACKOFF_MULTIPLIER, this.reconnectAttempt)
+
+    // Cap at maximum
+    return Math.min(backoff, this.RECONNECT_BACKOFF_MAX)
+  }
+
+  /**
+   * Add random jitter to prevent thundering herd
+   * @private
+   * @param {number} delay - Base delay
+   * @returns {number} Jitter amount in ms
+   */
+  _addJitter(delay) {
+    // Random jitter +/- JITTER_RATIO * delay
+    const range = delay * this.JITTER_RATIO
+    return (Math.random() - 0.5) * 2 * range
   }
 
   /**
@@ -544,13 +590,19 @@ export class NostrNetwork {
    * @private
    */
   async _attemptReconnect() {
-    if (this.isConnected) return
+    if (this.isConnected) {
+      // Reset attempt counter on successful connection
+      this.reconnectAttempt = 0
+      return
+    }
 
-    log.info('Attempting to reconnect')
+    log.info('Attempting to reconnect', { attempt: this.reconnectAttempt + 1 })
     try {
       await this.connect(this.onMessage)
+      // Reset attempt counter on successful connection
+      this.reconnectAttempt = 0
     } catch (err) {
-      log.error('Reconnect failed', { error: err.message })
+      log.error('Reconnect failed', { error: err.message, attempt: this.reconnectAttempt + 1 })
       this._handleDisconnect()
     }
   }

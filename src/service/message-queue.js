@@ -87,6 +87,25 @@ export class MessageQueue {
    * @returns {string} Message ID
    */
   enqueue(type, target, content, options = {}) {
+    // Check queue size limit before adding
+    if (this.queue.size >= CONFIG.MAX_QUEUE_SIZE) {
+      // Remove oldest message (FIFO eviction based on createdAt)
+      let oldestId = null;
+      let oldestTime = Infinity;
+
+      for (const [id, msg] of this.queue) {
+        if (msg.createdAt < oldestTime) {
+          oldestTime = msg.createdAt;
+          oldestId = id;
+        }
+      }
+
+      if (oldestId) {
+        this.queue.delete(oldestId);
+        log.warn('Queue full, dropped oldest message', { droppedId: oldestId, queueSize: this.queue.size });
+      }
+    }
+
     const id = generateId();
     const now = Date.now();
 
@@ -104,7 +123,7 @@ export class MessageQueue {
     this.queue.set(id, message);
     this._saveQueue();
 
-    log.debug('Message enqueued', { id, type, target: target.slice(0, 16) });
+    log.debug('Message enqueued', { id, type, target: target.slice(0, 16), queueSize: this.queue.size });
     return id;
   }
 

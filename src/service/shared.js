@@ -69,6 +69,7 @@ export const CONFIG = {
   MESSAGE_RETRY_BACKOFF: 2,            // Exponential backoff factor
   MESSAGE_TTL: 24 * 60 * 60 * 1000,    // Message expiration 24h
   OFFLINE_QUEUE_FILE: 'offline_queue.jsonl', // Offline queue file
+  MAX_QUEUE_SIZE: 10000,               // Maximum message queue size (prevents OOM)
 
   // Groups
   GROUP_HISTORY_LIMIT: 100,            // Group message history sync limit
@@ -141,34 +142,56 @@ export function acquireLock(timeout = 1000) {
     try {
       // Use mkdir with O_EXCL flag for truly atomic lock acquisition
       // This avoids TOCTOU race condition present in writeFile+readFile pattern
-      fs.mkdirSync(lockDir, { mode: 0o700 });
+      fs.mkdirSync(lockDir, { mode: 0o700, recursive: false });
       // Write our PID to a file inside the lock directory
       fs.writeFileSync(path.join(lockDir, 'pid'), process.pid.toString());
       return true;
     } catch (err) {
       if (err.code === 'EEXIST') {
         // Lock directory exists, check if stale
-        try {
-          const pidPath = path.join(lockDir, 'pid');
-          const lockPid = parseInt(fs.readFileSync(pidPath, 'utf8').trim());
-          process.kill(lockPid, 0);
-          // Process alive, wait
-        } catch {
-          // Process dead or PID file unreadable, try to clean up stale lock
+        const isStale = _isLockStale(lockDir);
+
+        if (isStale) {
+          // Lock is stale, try to remove and immediately retry
           try {
-            // Use rmdir to remove the lock directory (may fail if another process acquired it)
-            fs.rmdirSync(lockDir);
+            // Use recursive:true to properly remove the directory
+            fs.rmSync(lockDir, { recursive: true, force: false });
+            // Immediately retry acquiring after successful removal
             continue;
-          } catch {
-            // Another process may have acquired the lock, just continue waiting
+          } catch (removeErr) {
+            if (removeErr.code === 'ENOENT') {
+              // Directory was removed by another process, try to acquire
+              continue;
+            }
+            // Failed to remove (EACCES, EBUSY, etc.), another process may have it
           }
         }
+        // Lock is held by another process, wait
       }
       // Use non-blocking wait
       sleepSync(pollInterval);
     }
   }
   return false;
+}
+
+/**
+ * Check if a lock is stale (process dead or PID file missing)
+ * @private
+ * @param {string} lockDir - Lock directory path
+ * @returns {boolean} True if lock is stale
+ */
+function _isLockStale(lockDir) {
+  try {
+    const pidPath = path.join(lockDir, 'pid');
+    const lockPid = parseInt(fs.readFileSync(pidPath, 'utf8').trim());
+    // Check if process is still alive
+    process.kill(lockPid, 0);
+    return false; // Process is alive
+  } catch (err) {
+    // Process is dead or PID file missing/corrupt
+    return true;
+  }
 }
 
 /**
@@ -185,20 +208,22 @@ export async function acquireLockAsync(timeout = 1000) {
 
   while (Date.now() - start < timeout) {
     try {
-      fs.mkdirSync(lockDir, { mode: 0o700 });
+      fs.mkdirSync(lockDir, { mode: 0o700, recursive: false });
       fs.writeFileSync(path.join(lockDir, 'pid'), process.pid.toString());
       return true;
     } catch (err) {
       if (err.code === 'EEXIST') {
-        try {
-          const pidPath = path.join(lockDir, 'pid');
-          const lockPid = parseInt(fs.readFileSync(pidPath, 'utf8').trim());
-          process.kill(lockPid, 0);
-        } catch {
+        const isStale = _isLockStale(lockDir);
+
+        if (isStale) {
           try {
-            fs.rmdirSync(lockDir);
+            fs.rmSync(lockDir, { recursive: true, force: false });
             continue;
-          } catch {}
+          } catch (removeErr) {
+            if (removeErr.code === 'ENOENT') {
+              continue;
+            }
+          }
         }
       }
       await sleep(pollInterval);
@@ -217,7 +242,8 @@ export function releaseLock() {
     const pidPath = path.join(lockDir, 'pid');
     const lockPid = fs.readFileSync(pidPath, 'utf8').trim();
     if (parseInt(lockPid) === process.pid) {
-      fs.rmdirSync(lockDir);
+      // Use rmSync with recursive:true to properly remove the directory
+      fs.rmSync(lockDir, { recursive: true, force: true });
     }
   } catch {}
 }
@@ -330,11 +356,17 @@ export class LRUCache {
   set(key, value) {
     if (this.cache.has(key)) {
       this.cache.delete(key);
-    } else if (this.cache.size >= this.maxSize) {
+    } else if (this.maxSize > 0 && this.cache.size >= this.maxSize) {
+      // Only evict if maxSize > 0 (prevents undefined key when maxSize is 0)
       const firstKey = this.cache.keys().next().value;
-      this.cache.delete(firstKey);
+      if (firstKey !== undefined) {
+        this.cache.delete(firstKey);
+      }
     }
-    this.cache.set(key, value);
+    // Only set if maxSize > 0 or cache not at limit
+    if (this.maxSize > 0 || this.cache.size < this.maxSize) {
+      this.cache.set(key, value);
+    }
   }
 
   /**
@@ -344,11 +376,17 @@ export class LRUCache {
   add(key) {
     if (this.cache.has(key)) {
       this.cache.delete(key);
-    } else if (this.cache.size >= this.maxSize) {
+    } else if (this.maxSize > 0 && this.cache.size >= this.maxSize) {
+      // Only evict if maxSize > 0 (prevents undefined key when maxSize is 0)
       const firstKey = this.cache.keys().next().value;
-      this.cache.delete(firstKey);
+      if (firstKey !== undefined) {
+        this.cache.delete(firstKey);
+      }
     }
-    this.cache.set(key, true);
+    // Only set if maxSize > 0 or cache not at limit
+    if (this.maxSize > 0 || this.cache.size < this.maxSize) {
+      this.cache.set(key, true);
+    }
   }
 
   /**

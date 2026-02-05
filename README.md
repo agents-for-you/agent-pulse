@@ -28,6 +28,14 @@
 
 ## Changelog
 
+### v2.5.0 (P0 Stability Fixes)
+- **Fixed**: LRU cache boundary check (maxSize=0 edge case)
+- **Fixed**: File lock race condition with proper atomic operations
+- **Added**: Exponential backoff with jitter for network reconnection
+- **Added**: Message queue size limit (10000 messages, FIFO eviction)
+- **Added**: New tests for file lock, exponential backoff, queue limit
+- **Result**: 241 tests passing (9 new tests added)
+
 ### v2.4.1 (Final Relay List)
 - **Cleaned**: Removed non-existent relays (relay.nostr.wine, relay.jdmac.org)
 - **Result**: 7 verified relays, 100% valid domains
