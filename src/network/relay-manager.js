@@ -3,11 +3,19 @@
  * Dynamic scoring, failover, health monitoring
  */
 
-import fs from 'fs';
+import { promises as fs } from 'fs';
 import { RELAY_STATS_FILE, atomicWriteFileSync } from '../service/shared.js';
 import { logger } from '../utils/logger.js';
 
 const log = logger.child('relay-manager');
+
+/**
+ * Debounced write configuration
+ */
+const DEBOUNCE_CONFIG = {
+  IDLE_TIMEOUT: 30000,  // Save after 30 seconds of inactivity
+  OPERATION_THRESHOLD: 10,  // Save after 10 operations
+};
 
 /**
  * @typedef {Object} RelayStats
@@ -42,8 +50,17 @@ export class RelayManager {
       this.relays.set(relay, this._createStats());
     }
 
-    // Try to load persisted statistics
-    this._loadStats();
+    // Debounced write state
+    this._dirty = false;
+    this._pendingOperations = 0;
+    this._saveTimer = null;
+    this._savePromise = null;
+    this._loadPromise = null;
+
+    // Schedule async load (non-blocking)
+    this._loadPromise = this._loadStats().catch(err => {
+      log.warn('Failed to load relay stats during init', { error: err.message });
+    });
   }
 
   /**
@@ -61,36 +78,110 @@ export class RelayManager {
   }
 
   /**
-   * Load persisted statistics
+   * Load persisted statistics (async)
+   * @private
    */
-  _loadStats() {
+  async _loadStats() {
     try {
-      if (fs.existsSync(RELAY_STATS_FILE)) {
-        const data = JSON.parse(fs.readFileSync(RELAY_STATS_FILE, 'utf8'));
-        for (const [relay, stats] of Object.entries(data)) {
-          if (this.relays.has(relay)) {
-            this.relays.set(relay, { ...this._createStats(), ...stats });
-          }
+      const data = await fs.readFile(RELAY_STATS_FILE, 'utf8');
+      const parsed = JSON.parse(data);
+      for (const [relay, stats] of Object.entries(parsed)) {
+        if (this.relays.has(relay)) {
+          this.relays.set(relay, { ...this._createStats(), ...stats });
         }
-        log.debug('Loaded relay stats', { count: Object.keys(data).length });
       }
+      log.debug('Loaded relay stats', { count: Object.keys(parsed).length });
     } catch (err) {
-      log.warn('Failed to load relay stats', { error: err.message });
+      if (err.code !== 'ENOENT') {
+        log.warn('Failed to load relay stats', { error: err.message });
+      }
     }
   }
 
   /**
-   * Save stats to file
+   * Wait for initial load to complete
+   * @returns {Promise<void>}
    */
-  _saveStats() {
-    try {
-      const data = {};
-      for (const [relay, stats] of this.relays) {
-        data[relay] = stats;
+  async ready() {
+    if (this._loadPromise) {
+      await this._loadPromise;
+      this._loadPromise = null;
+    }
+  }
+
+  /**
+   * Schedule debounced save
+   * @private
+   */
+  _scheduleSave() {
+    this._dirty = true;
+    this._pendingOperations++;
+
+    // Clear existing timer
+    if (this._saveTimer) {
+      clearTimeout(this._saveTimer);
+    }
+
+    // Save immediately if operation threshold reached
+    if (this._pendingOperations >= DEBOUNCE_CONFIG.OPERATION_THRESHOLD) {
+      this._saveStats();
+      return;
+    }
+
+    // Schedule save after idle timeout
+    this._saveTimer = setTimeout(() => {
+      this._saveStats();
+    }, DEBOUNCE_CONFIG.IDLE_TIMEOUT);
+  }
+
+  /**
+   * Save stats to file (async with deduplication)
+   * @private
+   */
+  async _saveStats() {
+    // Clear timer
+    if (this._saveTimer) {
+      clearTimeout(this._saveTimer);
+      this._saveTimer = null;
+    }
+
+    // Skip if not dirty or already saving
+    if (!this._dirty || this._savePromise) {
+      return;
+    }
+
+    this._dirty = false;
+    this._pendingOperations = 0;
+
+    // Create save promise to prevent concurrent writes
+    this._savePromise = (async () => {
+      try {
+        const data = {};
+        for (const [relay, stats] of this.relays) {
+          data[relay] = stats;
+        }
+        await fs.writeFile(RELAY_STATS_FILE, JSON.stringify(data, null, 2));
+      } catch (err) {
+        log.warn('Failed to save relay stats', { error: err.message });
+      } finally {
+        this._savePromise = null;
       }
-      atomicWriteFileSync(RELAY_STATS_FILE, JSON.stringify(data, null, 2));
-    } catch (err) {
-      log.warn('Failed to save relay stats', { error: err.message });
+    })();
+
+    return this._savePromise;
+  }
+
+  /**
+   * Flush pending stats to disk immediately
+   * @returns {Promise<void>}
+   */
+  async flush() {
+    if (this._dirty) {
+      await this._saveStats();
+    }
+    // Wait for any in-flight save
+    if (this._savePromise) {
+      await this._savePromise;
     }
   }
 
@@ -106,7 +197,7 @@ export class RelayManager {
       stats.totalLatency += latency;
       stats.lastSuccess = Date.now();
       stats.isHealthy = true;
-      this._saveStats();
+      this._scheduleSave();
     }
   }
 
@@ -126,7 +217,7 @@ export class RelayManager {
         stats.isHealthy = false;
         log.warn('Relay marked unhealthy', { relay });
       }
-      this._saveStats();
+      this._scheduleSave();
     }
   }
 
@@ -221,7 +312,7 @@ export class RelayManager {
     if (!this.relays.has(relay)) {
       this.relays.set(relay, this._createStats());
       log.info('Added relay', { relay });
-      this._saveStats();
+      this._scheduleSave();
     }
   }
 
@@ -232,7 +323,7 @@ export class RelayManager {
   removeRelay(relay) {
     if (this.relays.delete(relay)) {
       log.info('Removed relay', { relay });
-      this._saveStats();
+      this._scheduleSave();
     }
   }
 
@@ -244,7 +335,7 @@ export class RelayManager {
     if (this.relays.has(relay)) {
       this.relays.set(relay, this._createStats());
       log.info('Reset relay stats', { relay });
-      this._saveStats();
+      this._scheduleSave();
     }
   }
 
@@ -255,5 +346,19 @@ export class RelayManager {
   getBestRelay() {
     const healthy = this.getHealthyRelays();
     return healthy.length > 0 ? healthy[0] : null;
+  }
+
+  /**
+   * Close the manager and flush pending saves
+   * @returns {Promise<void>}
+   */
+  async close() {
+    // Clear any pending timer
+    if (this._saveTimer) {
+      clearTimeout(this._saveTimer);
+      this._saveTimer = null;
+    }
+    // Flush any pending saves
+    await this.flush();
   }
 }

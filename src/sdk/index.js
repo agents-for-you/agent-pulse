@@ -48,14 +48,18 @@ export class AgentPulseClient extends EventEmitter {
    */
   async init() {
     try {
-      // Load or create identity
-      if (this.options.ephemeral) {
-        this.identity = generateIdentity()
-        log.info('Using ephemeral identity')
+      // Load or create identity (only if not already set)
+      if (!this.identity) {
+        if (this.options.ephemeral) {
+          this.identity = generateIdentity()
+          log.info('Using ephemeral identity')
+        } else {
+          this.identity = this.options.identity
+            ? loadOrCreateIdentity(this.options.identity)
+            : loadOrCreateIdentity()
+        }
       } else {
-        this.identity = this.options.identity
-          ? loadOrCreateIdentity(this.options.identity)
-          : loadOrCreateIdentity()
+        log.info('Using pre-set identity')
       }
 
       // Create network instance
@@ -104,10 +108,32 @@ export class AgentPulseClient extends EventEmitter {
         return
       }
 
-      // Decrypt if encrypted
-      let content = msg.message || msg.content || msg
+      // Get content from various possible locations
+      // - msg.task: encrypted DM content from sendTask()
+      // - msg.result: response content from sendResult()
+      // - msg.message: broadcast message
+      // - msg.content: generic content
+      let content = msg.task || msg.result || msg.message || msg.content || msg
 
-      // Try NIP-04 decryption
+      // Debug logging
+      log.debug('SDK received message', {
+        from: msg.from?.slice(0, 8),
+        type: msg.type,
+        to: msg.to?.slice(0, 8),
+        hasTask: !!msg.task,
+        hasResult: !!msg.result,
+        hasMessage: !!msg.message,
+        contentType: typeof content,
+        contentPreview: typeof content === 'string' ? content.slice(0, 50) : JSON.stringify(content).slice(0, 50)
+      })
+
+      // Check if message is for us
+      if (msg.to && msg.to !== this.identity.publicKey) {
+        log.debug('Message not for us, ignoring', { to: msg.to?.slice(0, 8), me: this.identity.publicKey.slice(0, 8) })
+        return
+      }
+
+      // Try NIP-04 decryption (content may be encrypted string)
       if (typeof content === 'string') {
         try {
           const decrypted = await nip04.decrypt(
@@ -115,13 +141,20 @@ export class AgentPulseClient extends EventEmitter {
             msg.from,
             content
           )
-          content = JSON.parse(decrypted)
-        } catch {
-          // Not encrypted or failed to decrypt
+          log.debug('Successfully decrypted message')
+          try {
+            content = JSON.parse(decrypted)
+          } catch {
+            content = decrypted // Keep as string if not JSON
+          }
+        } catch (decryptError) {
+          // Not encrypted or failed to decrypt, try parsing as JSON
+          log.debug('Failed to decrypt, trying as plain JSON', { error: decryptError.message, name: decryptError.name })
           try {
             content = JSON.parse(content)
           } catch {
-            // Plain text message
+            // Plain text message, keep as is
+            log.debug('Content is plain text')
           }
         }
       }
@@ -142,7 +175,7 @@ export class AgentPulseClient extends EventEmitter {
       this.emit('message', message)
 
       // Emit specific event types if present
-      if (content.type) {
+      if (content && content.type) {
         this.emit(content.type, message)
       }
     } catch (err) {
@@ -197,6 +230,9 @@ export class AgentPulseClient extends EventEmitter {
 
       // Send via network
       await this.network.sendTask(targetPubkey, encrypted)
+
+      // Flush to ensure message is sent immediately
+      await this.network.flush()
 
       log.debug('Message sent', { to: targetPubkey.slice(0, 8) })
 

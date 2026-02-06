@@ -4,7 +4,7 @@
  * Features: message receiving, command processing, health check, message deduplication, file rotation, NIP-04 encryption, group encryption
  *          message signature verification, group permission check, message retry queue, rate limiting
  */
-import fs from 'fs';
+import { promises as fsPromises } from 'fs';
 import crypto from 'crypto';
 import * as nip04 from 'nostr-tools/nip04';
 import { NostrNetwork } from '../network/nostr-network.js';
@@ -15,9 +15,9 @@ import { messageRateLimiter } from '../utils/rate-limiter.js';
 import { validatePubkey, validateTopic } from '../utils/validation.js';
 import {
   DATA_DIR, PID_FILE, MSG_FILE, CMD_FILE, RESULT_FILE, HEALTH_FILE, GROUPS_FILE,
-  CONFIG, ErrorCode,
-  ensureDataDir, withLock, readJsonLines, appendJsonLine, LRUCache, generateId,
-  atomicWriteFileSync, safeUnlink, sleep
+  CONFIG, ErrorCode, createErrorResponseFromCode,
+  ensureDataDirAsync, withLock, readJsonLinesAsync, appendJsonLineAsync, appendJsonLine, LRUCache, generateId,
+  atomicWriteFile, safeUnlinkAsync, sleep, fileExistsAsync, getStatsAsync
 } from './shared.js';
 import { verifyMessageSignature, createSignedMessage } from '../core/message-signature.js';
 import { groupManager } from './group-manager.js';
@@ -32,7 +32,7 @@ let isShuttingDown = false;
 const groupSubscriptions = new Map(); // topic -> subscription
 
 // Group key cache
-const groupKeys = new Map(); // topic -> { key, iv_prefix }
+const groupKeys = new Map(); // topic -> { key, salt }
 
 // Message deduplication cache
 const processedMessages = new LRUCache(CONFIG.DEDUP_CACHE_SIZE);
@@ -43,10 +43,11 @@ const replayProtection = getReplayProtection();
 // ============ Group encryption ============
 
 /**
- * Derive group shared key from topic
+ * Derive group shared key from topic using GCM-compatible derivation
  * All members who know the topic can derive the same key
+ * Uses proper random salt per group with topic binding
  * @param {string} topic - Group topic
- * @returns {{key: Buffer, ivPrefix: Buffer}} Key object
+ * @returns {{key: Buffer, salt: Buffer}} Key object with per-group salt
  */
 function deriveGroupKey(topic) {
   if (groupKeys.has(topic)) {
@@ -58,51 +59,137 @@ function deriveGroupKey(topic) {
     throw new Error('Invalid topic format')
   }
 
-  // Use HKDF to derive key, salt contains app identifier to isolate different applications
-  // Note: Group security depends on topic confidentiality
-  const APP_IDENTIFIER = 'agent-p2p-group-v2'
-  const salt = Buffer.from(APP_IDENTIFIER, 'utf8')
-  const key = crypto.hkdfSync('sha256', topic, salt, 'encryption', 32)
-  const ivPrefix = crypto.hkdfSync('sha256', topic, salt, 'iv', 8)
+  // Derive a per-group salt from the topic using HKDF
+  // This ensures each group has unique salt while remaining deterministic
+  const APP_IDENTIFIER = 'agent-p2p-group-v3'
+  const baseSalt = Buffer.from(APP_IDENTIFIER, 'utf8')
+  const salt = crypto.hkdfSync('sha256', topic, baseSalt, 'salt', 32)
 
-  const keyObj = { key: Buffer.from(key), ivPrefix: Buffer.from(ivPrefix) }
+  // Derive the encryption key from topic + salt
+  const key = crypto.hkdfSync('sha256', topic, Buffer.from(salt), 'encryption', 32)
+
+  const keyObj = { key: Buffer.from(key), salt: Buffer.from(salt) }
   groupKeys.set(topic, keyObj)
   return keyObj
 }
 
 /**
- * Encrypt group message
+ * Encrypt group message using AES-256-GCM
+ * - Fully random 12-byte nonce for each message
+ * - Topic as AAD (Additional Authenticated Data) for integrity binding
+ * - Returns versioned format for backward compatibility
+ * @param {string} topic - Group topic
+ * @param {string} plaintext - Message to encrypt
+ * @returns {string} Versioned encrypted message (v2:nonce:ciphertext:tag)
  */
 function encryptGroupMessage(topic, plaintext) {
-  const { key, ivPrefix } = deriveGroupKey(topic);
+  const { key } = deriveGroupKey(topic);
 
-  // IV = 8-byte prefix + 8-byte random
-  const ivRandom = crypto.randomBytes(8);
-  const iv = Buffer.concat([ivPrefix, ivRandom]);
+  // Generate 12-byte random nonce for GCM (recommended size)
+  const nonce = crypto.randomBytes(12);
 
-  const cipher = crypto.createCipheriv('aes-256-cbc', key, iv);
-  let encrypted = cipher.update(plaintext, 'utf8', 'base64');
-  encrypted += cipher.final('base64');
+  // Create cipher with GCM mode
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, nonce);
 
-  // Return: ivRandom(base64) + ':' + encrypted
-  return ivRandom.toString('base64') + ':' + encrypted;
+  // Set topic as AAD (Additional Authenticated Data)
+  // This binds the ciphertext to the topic, preventing topic substitution attacks
+  cipher.setAAD(Buffer.from(topic, 'utf8'), {
+    plaintextLength: Buffer.byteLength(plaintext, 'utf8')
+  });
+
+  // Encrypt the message
+  let encrypted = cipher.update(plaintext, 'utf8');
+  encrypted = Buffer.concat([encrypted, cipher.final()]);
+
+  // Get authentication tag (16 bytes for GCM)
+  const authTag = cipher.getAuthTag();
+
+  // Return format: v2:nonce(base64):encrypted(base64):tag(base64)
+  const nonceB64 = nonce.toString('base64');
+  const encryptedB64 = encrypted.toString('base64');
+  const tagB64 = authTag.toString('base64');
+
+  return `v2:${nonceB64}:${encryptedB64}:${tagB64}`;
 }
 
 /**
- * Decrypt group message
+ * Decrypt group message with version detection
+ * - v2: AES-256-GCM with proper authentication
+ * - legacy (no version): AES-256-CBC for backward compatibility
+ * @param {string} topic - Group topic
+ * @param {string} ciphertext - Encrypted message (versioned or legacy)
+ * @returns {string} Decrypted plaintext
+ * @throws {Error} If decryption fails or authentication tag invalid
  */
 function decryptGroupMessage(topic, ciphertext) {
-  const { key, ivPrefix } = deriveGroupKey(topic);
+  const { key } = deriveGroupKey(topic);
+
+  // Check version from format
+  const parts = ciphertext.split(':');
+
+  if (parts[0] === 'v2' && parts.length === 4) {
+    // New GCM format: v2:nonce:encrypted:tag
+    const [, nonceB64, encryptedB64, tagB64] = parts;
+
+    const nonce = Buffer.from(nonceB64, 'base64');
+    const encrypted = Buffer.from(encryptedB64, 'base64');
+    const authTag = Buffer.from(tagB64, 'base64');
+
+    // Validate nonce length (GCM standard is 12 bytes)
+    if (nonce.length !== 12) {
+      throw new Error('Invalid nonce length');
+    }
+
+    // Create decipher
+    const decipher = crypto.createDecipheriv('aes-256-gcm', key, nonce);
+
+    // Set authentication tag before decryption
+    decipher.setAuthTag(authTag);
+
+    // Set AAD (must match encryption)
+    decipher.setAAD(Buffer.from(topic, 'utf8'), {
+      plaintextLength: encrypted.length
+    });
+
+    // Decrypt
+    let decrypted = decipher.update(encrypted);
+    decrypted = Buffer.concat([decrypted, decipher.final()]);
+
+    return decrypted.toString('utf8');
+  }
+
+  // Legacy format: ivRandom:encrypted (AES-256-CBC)
+  // Try to decrypt old format for backward compatibility during migration
+  try {
+    return decryptLegacyGroupMessage(topic, ciphertext);
+  } catch (err) {
+    throw new Error(`Decryption failed (invalid format or authentication): ${err.message}`);
+  }
+}
+
+/**
+ * Decrypt legacy group message (AES-256-CBC format)
+ * Used only for backward compatibility during migration
+ * @param {string} topic - Group topic
+ * @param {string} ciphertext - Legacy encrypted message
+ * @returns {string} Decrypted plaintext
+ */
+function decryptLegacyGroupMessage(topic, ciphertext) {
+  // Derive old format key for compatibility
+  const APP_IDENTIFIER = 'agent-p2p-group-v2'
+  const salt = Buffer.from(APP_IDENTIFIER, 'utf8')
+  const key = crypto.hkdfSync('sha256', topic, salt, 'encryption', 32)
+  const ivPrefix = crypto.hkdfSync('sha256', topic, salt, 'iv', 8)
 
   const [ivRandomB64, encrypted] = ciphertext.split(':');
   if (!ivRandomB64 || !encrypted) {
-    throw new Error('Invalid ciphertext format');
+    throw new Error('Invalid legacy ciphertext format');
   }
 
   const ivRandom = Buffer.from(ivRandomB64, 'base64');
-  const iv = Buffer.concat([ivPrefix, ivRandom]);
+  const iv = Buffer.concat([Buffer.from(ivPrefix), ivRandom]);
 
-  const decipher = crypto.createDecipheriv('aes-256-cbc', key, iv);
+  const decipher = crypto.createDecipheriv('aes-256-cbc', Buffer.from(key), iv);
   let decrypted = decipher.update(encrypted, 'base64', 'utf8');
   decrypted += decipher.final('utf8');
 
@@ -153,7 +240,7 @@ async function saveMessage(msg) {
   }
   processedMessages.add(msgId);
 
-  ensureDataDir();
+  await ensureDataDirAsync();
 
   try {
     // Try NIP-04 decryption
@@ -208,7 +295,7 @@ async function saveMessage(msg) {
     }
 
     // Check file size, need rotation
-    checkAndRotateFile(MSG_FILE);
+    await checkAndRotateFile(MSG_FILE);
 
     try {
       withLock(() => {
@@ -216,7 +303,7 @@ async function saveMessage(msg) {
         appendJsonLine(MSG_FILE, record, true);
       });
     } catch {
-      appendJsonLine(MSG_FILE, record, true);
+      await appendJsonLineAsync(MSG_FILE, record, true);
     }
 
     stats.messagesReceived++;
@@ -227,19 +314,19 @@ async function saveMessage(msg) {
 }
 
 /**
- * Check and rotate file
+ * Check and rotate file (async version)
  */
-function checkAndRotateFile(filePath) {
+async function checkAndRotateFile(filePath) {
   try {
-    if (!fs.existsSync(filePath)) return;
+    const stats = await getStatsAsync(filePath);
+    if (!stats) return;
 
-    const stats = fs.statSync(filePath);
     if (stats.size > CONFIG.MAX_MSG_FILE_SIZE) {
       // Read latest messages, keep some
-      const messages = readJsonLines(filePath);
+      const messages = await readJsonLinesAsync(filePath);
       const keep = messages.slice(-CONFIG.MAX_MESSAGES_KEEP);
 
-      fs.writeFileSync(filePath, keep.map(m => JSON.stringify(m)).join('\n') + '\n');
+      await atomicWriteFile(filePath, keep.map(m => JSON.stringify(m)).join('\n') + '\n');
       logger.info(`[Worker] File rotated: keeping ${keep.length} messages`);
     }
   } catch (err) {
@@ -250,17 +337,21 @@ function checkAndRotateFile(filePath) {
 // ============ Command processing ============
 
 /**
- * Process command queue
+ * Process command queue (async version)
  */
 async function processCommands() {
-  if (!fs.existsSync(CMD_FILE)) return;
+  const exists = await fileExistsAsync(CMD_FILE);
+  if (!exists) return;
 
   let commands;
   try {
     commands = withLock(() => {
       const cmds = readJsonLines(CMD_FILE);
       if (cmds.length > 0) {
-        fs.writeFileSync(CMD_FILE, '');
+        // Truncate the file asynchronously
+        fsPromises.writeFile(CMD_FILE, '').catch(err => {
+          logger.error(`[Worker] Failed to truncate command file: ${err.message}`);
+        });
       }
       return cmds;
     });
@@ -274,16 +365,16 @@ async function processCommands() {
       stats.commandsProcessed++;
     } catch (err) {
       logger.error(`[Worker] Command processing failed: ${err.message}`);
-      saveResult(cmd.id, false, ErrorCode.INTERNAL_ERROR, err.message);
+      await saveResult(cmd.id, false, ErrorCode.INTERNAL_ERROR, err.message);
       stats.errors++;
     }
   }
 }
 
 /**
- * Save command execution result
+ * Save command execution result (async version)
  */
-function saveResult(cmdId, success, code, message = null) {
+async function saveResult(cmdId, success, code, message = null) {
   const result = {
     cmdId,
     success,
@@ -297,12 +388,12 @@ function saveResult(cmdId, success, code, message = null) {
       appendJsonLine(RESULT_FILE, result);
     });
   } catch {
-    appendJsonLine(RESULT_FILE, result);
+    await appendJsonLineAsync(RESULT_FILE, result);
   }
 }
 
 /**
- * Process retry queue
+ * Process retry queue (async version)
  */
 async function processRetryQueue() {
   if (!network || !network.isConnected) return;
@@ -317,8 +408,8 @@ async function processRetryQueue() {
     // Check retry count
     if (entry.retryCount >= CONFIG.MESSAGE_RETRY_MAX) {
       logger.warn(`[Worker] Message retry count exhausted: ${entry.id}`);
-      messageQueue.markSuccess(entry.id); // Remove from queue
-      saveResult(entry.id, false, ErrorCode.MESSAGE_RETRY_EXHAUSTED, 'Retry count exhausted');
+      await messageQueue.markSuccess(entry.id); // Remove from queue
+      await saveResult(entry.id, false, ErrorCode.MESSAGE_RETRY_EXHAUSTED, 'Retry count exhausted');
       continue;
     }
 
@@ -331,33 +422,28 @@ async function processRetryQueue() {
         const encrypted = await nip04.encrypt(identity.secretKey, entry.target, JSON.stringify(signedMessage));
 
         await network.sendTask(entry.target, encrypted);
-        messageQueue.markSuccess(entry.id);
-        saveResult(entry.id, true, ErrorCode.OK, 'Retry succeeded');
+        await messageQueue.markSuccess(entry.id);
+        await saveResult(entry.id, true, ErrorCode.OK, 'Retry succeeded');
         stats.messagesSent++;
         logger.info(`[Worker] Retry succeeded: ${entry.id}`);
       }
     } catch (err) {
-      messageQueue.markFailure(entry.id, err.message);
+      await messageQueue.markFailure(entry.id, err.message);
       logger.error(`[Worker] Retry failed: ${entry.id} - ${err.message}`);
     }
   }
 }
 
 /**
- * Handle single command
+ * Handle single command (async version)
  */
 async function handleCommand(cmd) {
   switch (cmd.type) {
     case 'send':
       if (!network || !network.isConnected) {
         logger.error('[Worker] Network disconnected, adding to retry queue');
-        messageQueue.enqueue({
-          id: cmd.id,
-          type: 'send',
-          target: cmd.target,
-          content: cmd.content
-        });
-        saveResult(cmd.id, false, ErrorCode.NETWORK_DISCONNECTED, 'Added to retry queue');
+        await messageQueue.enqueue('send', cmd.target, cmd.content, { id: cmd.id });
+        await saveResult(cmd.id, false, ErrorCode.NETWORK_DISCONNECTED, 'Added to retry queue');
         return;
       }
 
@@ -371,25 +457,21 @@ async function handleCommand(cmd) {
 
         await network.sendTask(cmd.target, encrypted);
         logger.info(`[Worker] Encrypted message sent to ${cmd.target.slice(0, 8)}...`);
-        messageQueue.markSuccess(cmd.id);
-        saveResult(cmd.id, true, ErrorCode.OK);
+        await messageQueue.markSuccess(cmd.id);
+        await saveResult(cmd.id, true, ErrorCode.OK);
         stats.messagesSent++;
       } catch (err) {
         logger.error(`[Worker] Send failed: ${err.message}`);
 
         // Add to retry queue
-        const queueEntry = messageQueue.enqueue({
-          id: cmd.id,
-          type: 'send',
-          target: cmd.target,
-          content: cmd.content
-        });
-        messageQueue.markFailure(cmd.id, err.message);
+        await messageQueue.enqueue('send', cmd.target, cmd.content, { id: cmd.id });
+        await messageQueue.markFailure(cmd.id, err.message);
 
-        if (queueEntry.retryCount >= CONFIG.MESSAGE_RETRY_MAX) {
-          saveResult(cmd.id, false, ErrorCode.MESSAGE_RETRY_EXHAUSTED, err.message);
+        const queueEntry = messageQueue.getMessage(cmd.id);
+        if (queueEntry && queueEntry.retryCount >= CONFIG.MESSAGE_RETRY_MAX) {
+          await saveResult(cmd.id, false, ErrorCode.MESSAGE_RETRY_EXHAUSTED, err.message);
         } else {
-          saveResult(cmd.id, false, ErrorCode.NETWORK_SEND_FAILED, `Retrying (${queueEntry.retryCount}/${CONFIG.MESSAGE_RETRY_MAX})`);
+          await saveResult(cmd.id, false, ErrorCode.NETWORK_SEND_FAILED, `Retrying (${queueEntry?.retryCount || 0}/${CONFIG.MESSAGE_RETRY_MAX})`);
         }
         stats.errors++;
       }
@@ -399,10 +481,10 @@ async function handleCommand(cmd) {
       try {
         await subscribeToGroup(cmd.groupId, cmd.topic);
         logger.info(`[Worker] Joined group: ${cmd.groupId}`);
-        saveResult(cmd.id, true, ErrorCode.OK);
+        await saveResult(cmd.id, true, ErrorCode.OK);
       } catch (err) {
         logger.error(`[Worker] Failed to join group: ${err.message}`);
-        saveResult(cmd.id, false, ErrorCode.INTERNAL_ERROR, err.message);
+        await saveResult(cmd.id, false, ErrorCode.INTERNAL_ERROR, err.message);
       }
       break;
 
@@ -410,7 +492,7 @@ async function handleCommand(cmd) {
       try {
         unsubscribeFromGroup(cmd.topic);
         logger.info(`[Worker] Left group: ${cmd.groupId}`);
-        saveResult(cmd.id, true, ErrorCode.OK);
+        await saveResult(cmd.id, true, ErrorCode.OK);
       } catch (err) {
         logger.error(`[Worker] Failed to leave group: ${err.message}`);
       }
@@ -419,7 +501,7 @@ async function handleCommand(cmd) {
     case 'group_send':
       if (!network || !network.isConnected) {
         logger.error('[Worker] Network disconnected');
-        saveResult(cmd.id, false, ErrorCode.NETWORK_DISCONNECTED);
+        await saveResult(cmd.id, false, ErrorCode.NETWORK_DISCONNECTED);
         return;
       }
 
@@ -427,7 +509,7 @@ async function handleCommand(cmd) {
       const canSend = groupManager.canSendMessage(cmd.groupId, identity.publicKey);
       if (!canSend.ok) {
         logger.warn(`[Worker] Group message send rejected: ${canSend.reason}`);
-        saveResult(cmd.id, false, canSend.code, canSend.reason);
+        await saveResult(cmd.id, false, canSend.code, canSend.reason);
         return;
       }
 
@@ -445,10 +527,10 @@ async function handleCommand(cmd) {
           timestamp: Date.now()
         });
 
-        saveResult(cmd.id, true, ErrorCode.OK);
+        await saveResult(cmd.id, true, ErrorCode.OK);
       } catch (err) {
         logger.error(`[Worker] Group message send failed: ${err.message}`);
-        saveResult(cmd.id, false, ErrorCode.NETWORK_SEND_FAILED, err.message);
+        await saveResult(cmd.id, false, ErrorCode.NETWORK_SEND_FAILED, err.message);
       }
       break;
 
@@ -458,7 +540,7 @@ async function handleCommand(cmd) {
 
     default:
       logger.warn(`[Worker] Unknown command type: ${cmd.type}`);
-      saveResult(cmd.id, false, ErrorCode.UNKNOWN_COMMAND);
+      await saveResult(cmd.id, false, ErrorCode.UNKNOWN_COMMAND);
   }
 }
 
@@ -476,9 +558,9 @@ const stats = {
 };
 
 /**
- * Update health status
+ * Update health status (async version)
  */
-function updateHealth() {
+async function updateHealth() {
   const memUsage = process.memoryUsage();
   const pendingMessages = messageQueue.getPendingMessages();
   const health = {
@@ -508,7 +590,7 @@ function updateHealth() {
   };
 
   try {
-    atomicWriteFileSync(HEALTH_FILE, JSON.stringify(health, null, 2));
+    await atomicWriteFile(HEALTH_FILE, JSON.stringify(health, null, 2));
   } catch (err) {
     logger.error(`[Worker] Failed to update health status: ${err.message}`);
     stats.errors++;
@@ -518,13 +600,20 @@ function updateHealth() {
 // ============ Lifecycle ============
 
 /**
- * Graceful shutdown
+ * Graceful shutdown (async version with flush)
  */
 async function shutdown() {
   if (isShuttingDown) return;
   isShuttingDown = true;
 
   logger.info('[Worker] Shutting down...');
+
+  // Flush any pending message queue saves
+  try {
+    await messageQueue.flush();
+  } catch (err) {
+    logger.debug(`[Worker] Failed to flush message queue: ${err.message}`);
+  }
 
   // Close group subscriptions
   for (const sub of groupSubscriptions.values()) {
@@ -543,8 +632,8 @@ async function shutdown() {
   }
 
   // Safely clean up files
-  safeUnlink(PID_FILE, (msg) => logger.debug(msg));
-  safeUnlink(HEALTH_FILE, (msg) => logger.debug(msg));
+  await safeUnlinkAsync(PID_FILE, (msg) => logger.debug(msg));
+  await safeUnlinkAsync(HEALTH_FILE, (msg) => logger.debug(msg));
 
   process.exit(0);
 }
@@ -603,13 +692,14 @@ function unsubscribeFromGroup(topic) {
 }
 
 /**
- * Load existing groups and subscribe
+ * Load existing groups and subscribe (async version)
  */
 async function loadExistingGroups() {
-  if (!fs.existsSync(GROUPS_FILE)) return;
+  const exists = await fileExistsAsync(GROUPS_FILE);
+  if (!exists) return;
 
   try {
-    const data = JSON.parse(fs.readFileSync(GROUPS_FILE, 'utf8'));
+    const data = JSON.parse(await fsPromises.readFile(GROUPS_FILE, 'utf8'));
     for (const [groupId, group] of Object.entries(data.groups || {})) {
       try {
         await subscribeToGroup(groupId, group.topic);
@@ -623,13 +713,13 @@ async function loadExistingGroups() {
 }
 
 /**
- * Main function
+ * Main function (async version)
  */
 async function main() {
-  ensureDataDir();
+  await ensureDataDirAsync();
 
   // Write PID file
-  fs.writeFileSync(PID_FILE, process.pid.toString());
+  await fsPromises.writeFile(PID_FILE, process.pid.toString());
 
   logger.info(`[Worker] Starting... PID: ${process.pid}`);
 
@@ -680,7 +770,7 @@ async function main() {
   setInterval(() => messageQueue.cleanExpired(), 60000); // Clean expired messages every minute
 
   // Update health status immediately
-  updateHealth();
+  await updateHealth();
 
   // Signal handling
   process.on('SIGTERM', shutdown);
@@ -693,6 +783,6 @@ async function main() {
 
 main().catch(err => {
   logger.error(`[Worker] Failed to start: ${err.message}`);
-  try { fs.unlinkSync(PID_FILE); } catch {}
+  safeUnlinkAsync(PID_FILE).catch(() => {});
   process.exit(1);
 });

@@ -5,7 +5,7 @@
 
 import crypto from 'crypto'
 import { getPublicKey } from 'nostr-tools'
-import { readJson, writeJson } from './storage.js'
+import { readEncryptedJson, writeEncryptedJson } from './storage.js'
 import { DEFAULT_IDENTITY_FILE } from '../config/defaults.js'
 import { logger } from '../utils/logger.js'
 import * as nip19 from './nip19.js'
@@ -95,25 +95,51 @@ export function generateIdentity() {
 }
 
 /**
- * Load or create identity
+ * Load or create identity with encryption-at-rest support
  * @param {string} [identityFile=DEFAULT_IDENTITY_FILE] - Identity file path
  * @returns {Identity} Identity object
  * @throws {Error} If unable to load or create identity
  */
 export function loadOrCreateIdentity(identityFile = DEFAULT_IDENTITY_FILE) {
   try {
-    const existing = readJson(identityFile)
+    const existing = readEncryptedJson(identityFile, 'secretKey')
 
     if (existing?.secretKey) {
-      log.debug('Loading existing identity', { file: identityFile })
+      log.debug('Loading existing identity', {
+        file: identityFile,
+        encrypted: existing._needsMigration !== true
+      })
+
+      // If existing key was not encrypted, it will be re-encrypted on next save
+      if (existing._needsMigration) {
+        log.info('Migrating unencrypted key to encrypted storage', { file: identityFile })
+        // Re-save to trigger encryption
+        const identity = loadIdentityFromSecretKey(existing.secretKey)
+        const saved = writeEncryptedJson(
+          identityFile,
+          { secretKey: toHex(identity.secretKey) },
+          'secretKey',
+          { secure: true }
+        )
+        if (!saved) {
+          log.warn('Failed to migrate identity to encrypted storage', { file: identityFile })
+        }
+        return identity
+      }
+
       return loadIdentityFromSecretKey(existing.secretKey)
     }
 
     log.info('No existing identity found, generating new one', { file: identityFile })
     const identity = generateIdentity()
 
-    // Save private key with secure permissions
-    const saved = writeJson(identityFile, { secretKey: toHex(identity.secretKey) }, { secure: true })
+    // Save private key with encryption (enabled by default)
+    const saved = writeEncryptedJson(
+      identityFile,
+      { secretKey: toHex(identity.secretKey) },
+      'secretKey',
+      { secure: true }
+    )
     if (!saved) {
       log.warn('Failed to persist identity file', { file: identityFile })
     }

@@ -5,9 +5,11 @@
 
 import { SimplePool, finalizeEvent, verifyEvent } from 'nostr-tools'
 import WebSocket from 'ws'
+import { gunzipSync } from 'zlib'
 import { DEFAULT_RELAYS, DEFAULT_TOPIC, NETWORK_CONFIG } from '../config/defaults.js'
 import { logger } from '../utils/logger.js'
 import { LRUCache } from '../service/shared.js'
+import { MessageBatcher } from '../utils/performance.js'
 
 const log = logger.child('network')
 
@@ -122,6 +124,26 @@ export class NostrNetwork {
     // Latency history for percentile calculation
     this.latencyHistory = new Map() // relay -> [latencies]
     this.MAX_LATENCY_SAMPLES = 50
+
+    // Message batching for outbound messages
+    this._batcher = new MessageBatcher({
+      maxSize: 10,
+      timeout: 100,
+      compress: true
+    })
+    this._setupBatcher()
+  }
+
+  /**
+   * Setup batcher callback to flush messages
+   * @private
+   */
+  _setupBatcher() {
+    this._batcher.onFlush((batch, isCompressed) => {
+      this._publishBatch(batch, isCompressed).catch(err => {
+        log.warn('Failed to publish batch', { error: err.message })
+      })
+    })
   }
 
   /**
@@ -467,7 +489,7 @@ export class NostrNetwork {
         const subscriptionTimeout = setTimeout(() => {
           if (ws.readyState !== WebSocket.OPEN) {
             ws.terminate()
-            this._updateRelayHealth(relay, false, null, 'connection timeout')
+            this._recordFailure(relay, 'connection timeout')
             resolve(false)
           }
         }, timeout)
@@ -926,13 +948,20 @@ export class NostrNetwork {
    * @returns {Promise<void>}
    */
   async broadcast(message) {
-    await this.publish({
+    const payload = {
       type: 'broadcast',
       from: this.identity.publicKey,
       agent: this.identity.agent,
       ts: Date.now(),
       message
-    })
+    }
+
+    // Add to batch - will return false if batch is full
+    if (!this._batcher.add(payload)) {
+      // Batch full, flush first then add
+      this._batcher.flush()
+      this._batcher.add(payload)
+    }
   }
 
   /**
@@ -1024,14 +1053,21 @@ export class NostrNetwork {
       throw new Error('Invalid target public key')
     }
 
-    await this.publish({
+    const payload = {
       type: 'task',
       from: this.identity.publicKey,
       to: target,
       agent: this.identity.agent,
       ts: Date.now(),
       task
-    })
+    }
+
+    // Add to batch - will return false if batch is full
+    if (!this._batcher.add(payload)) {
+      // Batch full, flush first then add
+      this._batcher.flush()
+      this._batcher.add(payload)
+    }
   }
 
   /**
@@ -1053,6 +1089,73 @@ export class NostrNetwork {
       ts: Date.now(),
       result
     })
+  }
+
+  /**
+   * Publish a batch of messages
+   * @private
+   * @param {*} batch - Batch data (compressed batch object or array)
+   * @param {boolean} isCompressed - Whether batch is compressed
+   * @returns {Promise<void>}
+   */
+  async _publishBatch(batch, isCompressed) {
+    if (!this.isConnected) return
+
+    if (isCompressed && batch._batch) {
+      // Compressed batch - unpack and send individual messages
+      const messages = this._decompressBatch(batch)
+      for (const payload of messages) {
+        try {
+          await this.publish(payload, { multiPath: false })
+        } catch (err) {
+          log.debug('Failed to publish batched message', { error: err.message })
+        }
+      }
+      log.debug('Published compressed batch', { count: messages.length })
+    } else if (Array.isArray(batch)) {
+      // Uncompressed batch
+      for (const payload of batch) {
+        try {
+          await this.publish(payload, { multiPath: false })
+        } catch (err) {
+          log.debug('Failed to publish batched message', { error: err.message })
+        }
+      }
+      log.debug('Published batch', { count: batch.length })
+    }
+  }
+
+  /**
+   * Decompress a batch
+   * @private
+   * @param {Object} batch - Compressed batch object
+   * @returns {Array} Array of messages
+   */
+  _decompressBatch(batch) {
+    // Import decompressBatch function from performance utils
+    // For simplicity, we handle inline here to avoid circular deps
+    if (!batch._batch) {
+      return [batch]
+    }
+    if (batch.compressed) {
+      const compressed = Buffer.from(batch.data, 'base64')
+      const decompressed = gunzipSync(compressed)
+      return JSON.parse(decompressed.toString('utf8'))
+    }
+    const data = Buffer.from(batch.data, 'base64').toString('utf8')
+    return JSON.parse(data)
+  }
+
+  /**
+   * Flush pending messages immediately
+   * @returns {Promise<void>}
+   */
+  async flush() {
+    if (!this._batcher.isEmpty()) {
+      this._batcher.flush()
+      // Give some time for the async publish to complete
+      await new Promise(resolve => setTimeout(resolve, 50))
+    }
   }
 
   /**
@@ -1078,8 +1181,11 @@ export class NostrNetwork {
   /**
    * Close connection
    */
-  close() {
+  async close() {
     log.info('Closing network connection')
+
+    // Flush pending messages
+    await this.flush()
 
     // Restore console.log
     this._restoreConsole()

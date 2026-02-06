@@ -39,9 +39,11 @@ describe('Message Queue', () => {
     it('should add message to queue and return id', async () => {
       const { MessageQueue } = await import('../src/service/message-queue.js');
       const queue = new MessageQueue();
+      await queue.init();
+      await queue.clear();
       const sizeBefore = queue.queue.size;
 
-      const id = queue.enqueue('send', 'pubkey123', 'Hello');
+      const id = await queue.enqueue('send', 'pubkey123', 'Hello');
 
       assert.ok(id);
       assert.equal(typeof id, 'string');
@@ -51,8 +53,10 @@ describe('Message Queue', () => {
     it('should create entry with correct fields', async () => {
       const { MessageQueue } = await import('../src/service/message-queue.js');
       const queue = new MessageQueue();
+      await queue.init();
+      await queue.clear();
 
-      const id = queue.enqueue('send', 'target123', 'content123');
+      const id = await queue.enqueue('send', 'target123', 'content123');
       const entry = queue.queue.get(id);
 
       assert.ok(entry);
@@ -68,11 +72,13 @@ describe('Message Queue', () => {
     it('should remove message from queue', async () => {
       const { MessageQueue } = await import('../src/service/message-queue.js');
       const queue = new MessageQueue();
+      await queue.init();
+      await queue.clear();
 
-      const id = queue.enqueue('send', 'target', 'content');
+      const id = await queue.enqueue('send', 'target', 'content');
       assert.ok(queue.queue.has(id));
 
-      queue.markSuccess(id);
+      await queue.markSuccess(id);
       assert.ok(!queue.queue.has(id));
     });
   });
@@ -81,10 +87,12 @@ describe('Message Queue', () => {
     it('should increment retry count', async () => {
       const { MessageQueue } = await import('../src/service/message-queue.js');
       const queue = new MessageQueue();
+      await queue.init();
+      await queue.clear();
 
-      const id = queue.enqueue('send', 'target', 'content');
+      const id = await queue.enqueue('send', 'target', 'content');
 
-      queue.markFailure(id, 'Network error');
+      await queue.markFailure(id, 'Network error');
 
       const entry = queue.queue.get(id);
       assert.equal(entry.retryCount, 1);
@@ -94,11 +102,13 @@ describe('Message Queue', () => {
     it('should set next retry time with delay', async () => {
       const { MessageQueue } = await import('../src/service/message-queue.js');
       const queue = new MessageQueue();
+      await queue.init();
+      await queue.clear();
 
-      const id = queue.enqueue('send', 'target', 'content');
+      const id = await queue.enqueue('send', 'target', 'content');
       const before = Date.now();
 
-      queue.markFailure(id, 'Error');
+      await queue.markFailure(id, 'Error');
 
       const entry = queue.queue.get(id);
       assert.ok(entry.nextRetryAt >= before);
@@ -107,13 +117,15 @@ describe('Message Queue', () => {
     it('should return false when retry exhausted', async () => {
       const { MessageQueue } = await import('../src/service/message-queue.js');
       const queue = new MessageQueue();
+      await queue.init();
+      await queue.clear();
 
-      const id = queue.enqueue('send', 'target', 'content');
+      const id = await queue.enqueue('send', 'target', 'content');
 
       // Fail multiple times until retries exhausted
       let canRetry = true;
       for (let i = 0; i < 10 && canRetry; i++) {
-        canRetry = queue.markFailure(id, `Error ${i}`);
+        canRetry = await queue.markFailure(id, `Error ${i}`);
       }
 
       assert.equal(canRetry, false);
@@ -124,11 +136,12 @@ describe('Message Queue', () => {
     it('should return messages ready for retry', async () => {
       const { MessageQueue } = await import('../src/service/message-queue.js');
       const queue = new MessageQueue();
-      queue.queue.clear();
+      await queue.init();
+      await queue.clear();
 
       // Add immediately retryable messages
-      queue.enqueue('send', 'target1', 'content1');
-      queue.enqueue('send', 'target2', 'content2');
+      await queue.enqueue('send', 'target1', 'content1');
+      await queue.enqueue('send', 'target2', 'content2');
 
       const pending = queue.getPendingMessages();
       assert.ok(pending.length >= 2);
@@ -152,6 +165,7 @@ describe('Message Queue', () => {
     it('should remove expired messages', async () => {
       const { MessageQueue } = await import('../src/service/message-queue.js');
       const queue = new MessageQueue();
+      await queue.init(); // Initialize first
 
       // Add expired message
       const expiredId = 'expired-' + Date.now();
@@ -165,7 +179,7 @@ describe('Message Queue', () => {
         nextRetryAt: Date.now()
       });
 
-      const removed = queue.cleanExpired();
+      const removed = await queue.cleanExpired();
 
       assert.ok(removed >= 1);
       assert.ok(!queue.queue.has(expiredId));

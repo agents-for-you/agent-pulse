@@ -3,12 +3,13 @@
  * Member management, permission control, history sync
  */
 
+import { promises as fsPromises } from 'fs';
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import {
-  GROUPS_FILE, GROUP_HISTORY_DIR, CONFIG, ErrorCode,
-  ensureDataDir, atomicWriteFileSync, generateId
+  GROUPS_FILE, GROUP_HISTORY_DIR, CONFIG, ErrorCode, createErrorResponseFromCode,
+  ensureDataDir, ensureDataDirAsync, atomicWriteFile, generateId, fileExistsAsync, readJsonAsync
 } from '../service/shared.js';
 import { logger } from '../utils/logger.js';
 
@@ -90,7 +91,7 @@ export class GroupManager {
    */
   createGroup(name, ownerPubkey) {
     if (!name || name.length < 2) {
-      return { ok: false, code: ErrorCode.INVALID_ARGS, error: 'name too short' };
+      return createErrorResponseFromCode(ErrorCode.INVALID_ARGS, 'name too short');
     }
 
     const groupId = generateId();
@@ -136,7 +137,7 @@ export class GroupManager {
    */
   joinGroup(groupId, topic, pubkey, name = '') {
     if (!groupId || !topic) {
-      return { ok: false, code: ErrorCode.INVALID_ARGS };
+      return createErrorResponseFromCode(ErrorCode.INVALID_ARGS);
     }
 
     let group = this.groups[groupId];
@@ -162,7 +163,7 @@ export class GroupManager {
     // Check if banned
     const existingMember = group.members[pubkey];
     if (existingMember?.isBanned) {
-      return { ok: false, code: ErrorCode.MEMBER_BANNED };
+      return createErrorResponseFromCode(ErrorCode.MEMBER_BANNED);
     }
 
     // Add/update member
@@ -189,14 +190,14 @@ export class GroupManager {
   leaveGroup(groupId, pubkey) {
     const group = this.groups[groupId];
     if (!group) {
-      return { ok: false, code: ErrorCode.GROUP_NOT_FOUND };
+      return createErrorResponseFromCode(ErrorCode.GROUP_NOT_FOUND);
     }
 
     // Owner cannot leave directly, need to transfer first
     if (group.owner === pubkey) {
       const otherMembers = Object.keys(group.members).filter(k => k !== pubkey);
       if (otherMembers.length > 0) {
-        return { ok: false, code: ErrorCode.NOT_GROUP_OWNER, error: 'Transfer ownership first' };
+        return createErrorResponseFromCode(ErrorCode.NOT_GROUP_OWNER, 'Transfer ownership first');
       }
       // Last person, delete group
       delete this.groups[groupId];
@@ -244,7 +245,7 @@ export class GroupManager {
   getMembers(groupId) {
     const group = this.groups[groupId];
     if (!group) {
-      return { ok: false, code: ErrorCode.GROUP_NOT_FOUND };
+      return createErrorResponseFromCode(ErrorCode.GROUP_NOT_FOUND);
     }
 
     const now = Date.now();
@@ -306,20 +307,20 @@ export class GroupManager {
   kickMember(groupId, operatorPubkey, targetPubkey) {
     const group = this.groups[groupId];
     if (!group) {
-      return { ok: false, code: ErrorCode.GROUP_NOT_FOUND };
+      return createErrorResponseFromCode(ErrorCode.GROUP_NOT_FOUND);
     }
 
     if (!this.hasAdminPermission(groupId, operatorPubkey)) {
-      return { ok: false, code: ErrorCode.NOT_GROUP_OWNER };
+      return createErrorResponseFromCode(ErrorCode.NOT_GROUP_OWNER);
     }
 
     if (!group.members[targetPubkey]) {
-      return { ok: false, code: ErrorCode.MEMBER_NOT_FOUND };
+      return createErrorResponseFromCode(ErrorCode.MEMBER_NOT_FOUND);
     }
 
     // Cannot kick owner
     if (group.owner === targetPubkey) {
-      return { ok: false, code: ErrorCode.INVALID_ARGS, error: 'Cannot kick owner' };
+      return createErrorResponseFromCode(ErrorCode.INVALID_ARGS, 'Cannot kick owner');
     }
 
     delete group.members[targetPubkey];
@@ -339,15 +340,15 @@ export class GroupManager {
   banMember(groupId, operatorPubkey, targetPubkey) {
     const group = this.groups[groupId];
     if (!group) {
-      return { ok: false, code: ErrorCode.GROUP_NOT_FOUND };
+      return createErrorResponseFromCode(ErrorCode.GROUP_NOT_FOUND);
     }
 
     if (!this.hasAdminPermission(groupId, operatorPubkey)) {
-      return { ok: false, code: ErrorCode.NOT_GROUP_OWNER };
+      return createErrorResponseFromCode(ErrorCode.NOT_GROUP_OWNER);
     }
 
     if (group.owner === targetPubkey) {
-      return { ok: false, code: ErrorCode.INVALID_ARGS, error: 'Cannot ban owner' };
+      return createErrorResponseFromCode(ErrorCode.INVALID_ARGS, 'Cannot ban owner');
     }
 
     // Create or update member record
@@ -379,11 +380,11 @@ export class GroupManager {
   unbanMember(groupId, operatorPubkey, targetPubkey) {
     const group = this.groups[groupId];
     if (!group) {
-      return { ok: false, code: ErrorCode.GROUP_NOT_FOUND };
+      return createErrorResponseFromCode(ErrorCode.GROUP_NOT_FOUND);
     }
 
     if (!this.hasAdminPermission(groupId, operatorPubkey)) {
-      return { ok: false, code: ErrorCode.NOT_GROUP_OWNER };
+      return createErrorResponseFromCode(ErrorCode.NOT_GROUP_OWNER);
     }
 
     if (group.members[targetPubkey]) {
@@ -405,19 +406,19 @@ export class GroupManager {
   muteMember(groupId, operatorPubkey, targetPubkey, duration = 0) {
     const group = this.groups[groupId];
     if (!group) {
-      return { ok: false, code: ErrorCode.GROUP_NOT_FOUND };
+      return createErrorResponseFromCode(ErrorCode.GROUP_NOT_FOUND);
     }
 
     if (!this.hasAdminPermission(groupId, operatorPubkey)) {
-      return { ok: false, code: ErrorCode.NOT_GROUP_OWNER };
+      return createErrorResponseFromCode(ErrorCode.NOT_GROUP_OWNER);
     }
 
     if (!group.members[targetPubkey]) {
-      return { ok: false, code: ErrorCode.MEMBER_NOT_FOUND };
+      return createErrorResponseFromCode(ErrorCode.MEMBER_NOT_FOUND);
     }
 
     if (group.owner === targetPubkey) {
-      return { ok: false, code: ErrorCode.INVALID_ARGS, error: 'Cannot mute owner' };
+      return createErrorResponseFromCode(ErrorCode.INVALID_ARGS, 'Cannot mute owner');
     }
 
     group.members[targetPubkey].isMuted = true;
@@ -438,11 +439,11 @@ export class GroupManager {
   unmuteMember(groupId, operatorPubkey, targetPubkey) {
     const group = this.groups[groupId];
     if (!group) {
-      return { ok: false, code: ErrorCode.GROUP_NOT_FOUND };
+      return createErrorResponseFromCode(ErrorCode.GROUP_NOT_FOUND);
     }
 
     if (!this.hasAdminPermission(groupId, operatorPubkey)) {
-      return { ok: false, code: ErrorCode.NOT_GROUP_OWNER };
+      return createErrorResponseFromCode(ErrorCode.NOT_GROUP_OWNER);
     }
 
     if (group.members[targetPubkey]) {
@@ -465,16 +466,16 @@ export class GroupManager {
   setAdmin(groupId, operatorPubkey, targetPubkey, isAdmin) {
     const group = this.groups[groupId];
     if (!group) {
-      return { ok: false, code: ErrorCode.GROUP_NOT_FOUND };
+      return createErrorResponseFromCode(ErrorCode.GROUP_NOT_FOUND);
     }
 
     // Only owner can set admin
     if (group.owner !== operatorPubkey) {
-      return { ok: false, code: ErrorCode.NOT_GROUP_OWNER };
+      return createErrorResponseFromCode(ErrorCode.NOT_GROUP_OWNER);
     }
 
     if (!group.members[targetPubkey]) {
-      return { ok: false, code: ErrorCode.MEMBER_NOT_FOUND };
+      return createErrorResponseFromCode(ErrorCode.MEMBER_NOT_FOUND);
     }
 
     group.members[targetPubkey].role = isAdmin ? 'admin' : 'member';
@@ -494,15 +495,15 @@ export class GroupManager {
   transferOwnership(groupId, operatorPubkey, newOwnerPubkey) {
     const group = this.groups[groupId];
     if (!group) {
-      return { ok: false, code: ErrorCode.GROUP_NOT_FOUND };
+      return createErrorResponseFromCode(ErrorCode.GROUP_NOT_FOUND);
     }
 
     if (group.owner !== operatorPubkey) {
-      return { ok: false, code: ErrorCode.NOT_GROUP_OWNER };
+      return createErrorResponseFromCode(ErrorCode.NOT_GROUP_OWNER);
     }
 
     if (!group.members[newOwnerPubkey]) {
-      return { ok: false, code: ErrorCode.MEMBER_NOT_FOUND };
+      return createErrorResponseFromCode(ErrorCode.MEMBER_NOT_FOUND);
     }
 
     // Update roles
@@ -550,12 +551,12 @@ export class GroupManager {
 
     const group = this.groups[groupId];
     if (!group) {
-      return { ok: false, code: ErrorCode.GROUP_NOT_FOUND };
+      return createErrorResponseFromCode(ErrorCode.GROUP_NOT_FOUND);
     }
 
     // Validate groupId format, prevent path traversal attack
     if (!/^[a-zA-Z0-9_-]+$/.test(groupId)) {
-      return { ok: false, code: ErrorCode.INVALID_ARGS, error: 'Invalid group ID format' };
+      return createErrorResponseFromCode(ErrorCode.INVALID_ARGS, 'Invalid group ID format');
     }
 
     // Use path.join and verify result is within data directory
@@ -565,7 +566,7 @@ export class GroupManager {
     const resolvedPath = path.resolve(historyFile);
     const resolvedDir = path.resolve(GROUP_HISTORY_DIR);
     if (!resolvedPath.startsWith(resolvedDir + path.sep) && resolvedPath !== resolvedDir) {
-      return { ok: false, code: ErrorCode.INVALID_ARGS, error: 'Path traversal detected' };
+      return createErrorResponseFromCode(ErrorCode.INVALID_ARGS, 'Path traversal detected');
     }
 
     if (!fs.existsSync(historyFile)) {
@@ -596,7 +597,7 @@ export class GroupManager {
       return { ok: true, messages, count: messages.length };
     } catch (err) {
       log.error('Failed to read message history', { groupId, error: err.message });
-      return { ok: false, code: ErrorCode.FILE_ERROR };
+      return createErrorResponseFromCode(ErrorCode.FILE_ERROR);
     }
   }
 
@@ -609,22 +610,22 @@ export class GroupManager {
   canSendMessage(groupId, pubkey) {
     const group = this.groups[groupId];
     if (!group) {
-      return { ok: false, code: ErrorCode.GROUP_NOT_FOUND };
+      return createErrorResponseFromCode(ErrorCode.GROUP_NOT_FOUND);
     }
 
     const member = group.members[pubkey];
     if (!member) {
-      return { ok: false, code: ErrorCode.MEMBER_NOT_FOUND };
+      return createErrorResponseFromCode(ErrorCode.MEMBER_NOT_FOUND);
     }
 
     if (member.isBanned) {
-      return { ok: false, code: ErrorCode.MEMBER_BANNED };
+      return createErrorResponseFromCode(ErrorCode.MEMBER_BANNED);
     }
 
     if (member.isMuted) {
       // Check if mute expired
       if (!member.mutedUntil || member.mutedUntil > Date.now()) {
-        return { ok: false, code: ErrorCode.MEMBER_MUTED };
+        return createErrorResponseFromCode(ErrorCode.MEMBER_MUTED);
       }
       // Mute expired, auto unmute
       member.isMuted = false;

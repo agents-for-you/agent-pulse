@@ -27,10 +27,10 @@ describe('Server Module', () => {
       const pidFile = path.join(DATA_DIR, 'server.pid')
       if (fs.existsSync(pidFile)) {
         // If real service is running, skip test
-        const result = isRunning()
+        const result = await isRunning()
         assert.ok(typeof result === 'number' || result === false)
       } else {
-        const result = isRunning()
+        const result = await isRunning()
         assert.strictEqual(result, false)
       }
     })
@@ -40,7 +40,7 @@ describe('Server Module', () => {
     it('should return status object', async () => {
       const { getStatus } = await importServer()
 
-      const status = getStatus()
+      const status = await getStatus()
 
       assert.ok('running' in status)
       assert.ok('pid' in status)
@@ -53,7 +53,7 @@ describe('Server Module', () => {
     it('should return array', async () => {
       const { readMessages } = await importServer()
 
-      const messages = readMessages(false)
+      const messages = await readMessages(false)
 
       assert.ok(Array.isArray(messages))
     })
@@ -67,7 +67,7 @@ describe('Server Module', () => {
       if (isRunning()) {
         const result = await sendMessage('abc', 'hello', { autoStart: false })
         assert.strictEqual(result.ok, false)
-        assert.strictEqual(result.code, 'INVALID_PUBKEY')
+        assert.strictEqual(result.codeKey, 'INVALID_PUBKEY')
       }
     })
 
@@ -77,7 +77,7 @@ describe('Server Module', () => {
       if (isRunning()) {
         const result = await sendMessage('g'.repeat(64), 'hello', { autoStart: false })
         assert.strictEqual(result.ok, false)
-        assert.strictEqual(result.code, 'INVALID_PUBKEY')
+        assert.strictEqual(result.codeKey, 'INVALID_PUBKEY')
       }
     })
 
@@ -88,7 +88,7 @@ describe('Server Module', () => {
         const validPubkey = 'a'.repeat(64)
         const result = await sendMessage(validPubkey, 'hello', { autoStart: false })
         assert.strictEqual(result.ok, false)
-        assert.strictEqual(result.code, 'SERVICE_NOT_RUNNING')
+        assert.strictEqual(result.codeKey, 'SERVICE_NOT_RUNNING')
       }
     })
   })
@@ -97,7 +97,7 @@ describe('Server Module', () => {
     it('should return null for non-existent cmdId', async () => {
       const { getSendResult } = await importServer()
 
-      const result = getSendResult('nonexistent-cmd-id')
+      const result = await getSendResult('nonexistent-cmd-id')
       assert.strictEqual(result, null)
     })
   })
@@ -106,7 +106,7 @@ describe('Server Module', () => {
     it('should return array', async () => {
       const { readResults } = await importServer()
 
-      const results = readResults(false)
+      const results = await readResults(false)
       assert.ok(Array.isArray(results))
     })
   })
@@ -131,7 +131,7 @@ describe('Group Operations', () => {
 
       const result = createGroup('')
       assert.strictEqual(result.ok, false)
-      assert.strictEqual(result.code, 'INVALID_ARGS')
+      assert.strictEqual(result.codeKey, 'INVALID_ARGS')
     })
 
     it('should reject short name', async () => {
@@ -139,7 +139,7 @@ describe('Group Operations', () => {
 
       const result = createGroup('a')
       assert.strictEqual(result.ok, false)
-      assert.strictEqual(result.code, 'INVALID_ARGS')
+      assert.strictEqual(result.codeKey, 'INVALID_ARGS')
     })
   })
 
@@ -149,7 +149,7 @@ describe('Group Operations', () => {
 
       const result = joinGroup('', 'topic')
       assert.strictEqual(result.ok, false)
-      assert.strictEqual(result.code, 'INVALID_ARGS')
+      assert.strictEqual(result.codeKey, 'INVALID_ARGS')
     })
 
     it('should reject missing topic', async () => {
@@ -157,7 +157,7 @@ describe('Group Operations', () => {
 
       const result = joinGroup('groupId', '')
       assert.strictEqual(result.ok, false)
-      assert.strictEqual(result.code, 'INVALID_ARGS')
+      assert.strictEqual(result.codeKey, 'INVALID_ARGS')
     })
   })
 
@@ -167,7 +167,7 @@ describe('Group Operations', () => {
 
       const result = leaveGroup('nonexistent-group-id')
       assert.strictEqual(result.ok, false)
-      assert.strictEqual(result.code, 'GROUP_NOT_FOUND')
+      assert.strictEqual(result.codeKey, 'GROUP_NOT_FOUND')
     })
   })
 
@@ -178,7 +178,7 @@ describe('Group Operations', () => {
       if (!isRunning()) {
         const result = sendGroupMessage('groupId', 'message')
         assert.strictEqual(result.ok, false)
-        assert.strictEqual(result.code, 'SERVICE_NOT_RUNNING')
+        assert.strictEqual(result.codeKey, 'SERVICE_NOT_RUNNING')
       }
     })
 
@@ -188,7 +188,7 @@ describe('Group Operations', () => {
       if (isRunning()) {
         const result = sendGroupMessage('nonexistent-group', 'message')
         assert.strictEqual(result.ok, false)
-        assert.strictEqual(result.code, 'GROUP_NOT_FOUND')
+        assert.strictEqual(result.codeKey, 'GROUP_NOT_FOUND')
       }
     })
   })

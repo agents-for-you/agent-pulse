@@ -1,0 +1,64 @@
+services:
+  agent-pulse-1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: agent-pulse-1
+    hostname: agent-pulse-1
+    command: ["sh", "-c", "mkdir -p /data && cd /data && node /app/index.js start && tail -f /dev/null"]
+    volumes:
+      - agent-data-1:/data
+    environment:
+      - AGENT_PULSE_EPHEMERAL=false
+      - LOG_LEVEL=DEBUG
+      - AGENT_NAME=agent-pulse-1
+      - NODE_ENV=production
+    networks:
+      - agent-network
+
+  agent-pulse-2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: agent-pulse-2
+    hostname: agent-pulse-2
+    command: ["sh", "-c", "mkdir -p /data && cd /data && node /app/index.js start && tail -f /dev/null"]
+    volumes:
+      - agent-data-2:/data
+    environment:
+      - AGENT_PULSE_EPHEMERAL=false
+      - LOG_LEVEL=DEBUG
+      - AGENT_NAME=agent-pulse-2
+      - NODE_ENV=production
+    networks:
+      - agent-network
+
+  agent-pulse-3:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: agent-pulse-3
+    hostname: agent-pulse-3
+    command: ["sh", "-c", "mkdir -p /data && cd /data && node /app/index.js start && tail -f /dev/null"]
+    volumes:
+      - agent-data-3:/data
+    environment:
+      - AGENT_PULSE_EPHEMERAL=false
+      - LOG_LEVEL=DEBUG
+      - AGENT_NAME=agent-pulse-3
+      - NODE_ENV=production
+    networks:
+      - agent-network
+
+networks:
+  agent-network:
+    driver: bridge
+    name: agent-pulse-network
+
+volumes:
+  agent-data-1:
+    name: agent-pulse-data-1
+  agent-data-2:
+    name: agent-pulse-data-2
+  agent-data-3:
+    name: agent-pulse-data-3

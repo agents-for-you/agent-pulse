@@ -198,7 +198,8 @@ describe('CLI Error Handling', () => {
       const result = parseOutput(stdout)
 
       assert.strictEqual(result.ok, false)
-      assert.strictEqual(result.code, 'INVALID_PUBKEY')
+      // Error code can be numeric (new format) or string (legacy format)
+      assert.ok(result.code === 'INVALID_PUBKEY' || result.code === 300 || result.codeKey === 'INVALID_PUBKEY')
     }
   })
 })

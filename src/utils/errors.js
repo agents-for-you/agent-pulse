@@ -3,7 +3,7 @@
  * Provides structured error types and handling helpers
  */
 
-import { ErrorCode } from '../service/shared.js'
+import { ErrorCode, createErrorResponseFromCode } from '../service/shared.js'
 
 /**
  * Base Application Error
@@ -190,11 +190,7 @@ export const errorHandler = {
     }
 
     // Generic error
-    return {
-      ok: false,
-      code: ErrorCode.INTERNAL_ERROR,
-      error: err.message || 'Unknown error'
-    }
+    return createErrorResponseFromCode(ErrorCode.INTERNAL_ERROR, err.message || 'Unknown error')
   },
 
   /**

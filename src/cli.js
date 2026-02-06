@@ -33,11 +33,10 @@ import {
   blacklistRelay
 } from './service/server.js';
 import { loadOrCreateIdentity, getIdentityPublicKeyNpub } from './core/identity.js';
-import { ErrorCode } from './service/shared.js';
+import { ErrorCode, createErrorResponseFromCode, ErrorCodes, createErrorResponse, createSuccessResponse } from './service/shared.js';
 import { getContacts } from './service/contacts.js';
 import * as nip19 from './core/nip19.js';
 import * as updater from './utils/updater.js';
-import { createErrorResponse, createSuccessResponse, ErrorCodes } from './utils/error-reporter.js';
 import { compressIfNeeded, decodeCompressed } from './utils/performance.js';
 
 // JSON output
@@ -67,51 +66,12 @@ function showProgress(message) {
 
 /**
  * Format error with enhanced reporting
- * @param {string} code - Error code
+ * @param {string} code - Error code (from ErrorCode enum)
  * @param {string} error - Error message
  * @returns {Object} Enhanced error response with suggestions
  */
 function formatError(code, error) {
-  // Map legacy error codes to new error reporter
-  const errorKeyMap = {
-    SERVICE_NOT_RUNNING: 'SERVICE_NOT_RUNNING',
-    SERVICE_ALREADY_RUNNING: 'SERVICE_ALREADY_RUNNING',
-    SERVICE_START_FAILED: 'SERVICE_START_FAILED',
-    NETWORK_DISCONNECTED: 'NETWORK_DISCONNECTED',
-    NETWORK_SEND_FAILED: 'NETWORK_SEND_FAILED',
-    RELAY_ALL_FAILED: 'RELAY_ALL_FAILED',
-    INVALID_ARGS: 'INVALID_ARGS',
-    INVALID_PUBKEY: 'INVALID_PUBKEY',
-    INVALID_SIGNATURE: 'INVALID_SIGNATURE',
-    GROUP_NOT_FOUND: 'GROUP_NOT_FOUND',
-    GROUP_ALREADY_EXISTS: 'GROUP_ALREADY_EXISTS',
-    NOT_GROUP_OWNER: 'NOT_GROUP_OWNER',
-    MEMBER_NOT_FOUND: 'MEMBER_NOT_FOUND',
-    MEMBER_BANNED: 'MEMBER_BANNED',
-    MEMBER_MUTED: 'MEMBER_MUTED',
-    MESSAGE_EXPIRED: 'MESSAGE_EXPIRED',
-    MESSAGE_RETRY_EXHAUSTED: 'MESSAGE_RETRY_EXHAUSTED',
-    FILE_ERROR: 'FILE_ERROR',
-    UNKNOWN_COMMAND: 'UNKNOWN_COMMAND',
-    INTERNAL_ERROR: 'INTERNAL_ERROR'
-  };
-
-  const errorKey = errorKeyMap[code] || 'INTERNAL_ERROR';
-  const errorDef = ErrorCodes[errorKey];
-
-  const response = {
-    ok: false,
-    code: errorDef?.code || 901,
-    codeKey: errorKey,
-    error: error || errorDef?.message || 'Unknown error',
-    suggestion: errorDef?.suggestion || null,
-    severity: errorDef?.severity || 'medium',
-    category: errorDef?.category || 'internal',
-    retryable: errorDef?.retryable || false,
-    timestamp: Date.now()
-  };
-
-  return response;
+  return createErrorResponseFromCode(code, error);
 }
 
 /**
@@ -869,7 +829,7 @@ const commands = {
         const fs = await import('fs');
         const path = await import('path');
         const fullPath = path.resolve(file);
-        fs.writeFileSync(fullPath, JSON.stringify(data, null, 2));
+        await fs.promises.writeFile(fullPath, JSON.stringify(data, null, 2));
         out({
           ok: true,
           exported: data,
@@ -905,7 +865,7 @@ const commands = {
       const fs = await import('fs');
       const path = await import('path');
       const fullPath = path.resolve(file);
-      const content = fs.readFileSync(fullPath, 'utf8');
+      const content = await fs.promises.readFile(fullPath, 'utf8');
       const data = JSON.parse(content);
 
       const contacts = getContacts();

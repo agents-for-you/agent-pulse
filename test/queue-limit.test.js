@@ -2,23 +2,40 @@
  * @fileoverview Message queue size limit tests
  */
 
-import { describe, it } from 'node:test';
+import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert';
 import { MessageQueue } from '../src/service/message-queue.js';
 import { CONFIG } from '../src/service/shared.js';
+import { safeUnlinkAsync } from '../src/utils/json-file.js';
+import path from 'path';
+import { DATA_DIR } from '../src/service/shared.js';
 
 describe('MessageQueue - Size Limit', () => {
-  it('should enforce maximum queue size', () => {
-    const queue = new MessageQueue();
-    queue.clear(); // Clear any pre-loaded messages
+  let originalMaxSize;
 
-    const originalMaxSize = CONFIG.MAX_QUEUE_SIZE;
+  beforeEach(async () => {
+    originalMaxSize = CONFIG.MAX_QUEUE_SIZE;
+    // Clear offline queue file to ensure clean state
+    try {
+      await safeUnlinkAsync(path.join(DATA_DIR, 'offline_queue.jsonl'));
+    } catch {}
+  });
+
+  afterEach(() => {
+    CONFIG.MAX_QUEUE_SIZE = originalMaxSize;
+  });
+
+  it('should enforce maximum queue size', async () => {
+    const queue = new MessageQueue();
+    await queue.init(); // Initialize before clear
+    await queue.clear(); // Clear any pre-loaded messages
+
     CONFIG.MAX_QUEUE_SIZE = 5;
 
     // Add 10 messages
     const ids = [];
     for (let i = 0; i < 10; i++) {
-      const id = queue.enqueue('test', `target-${i}`, `content-${i}`);
+      const id = await queue.enqueue('test', `target-${i}`, `content-${i}`);
       ids.push(id);
     }
 
@@ -37,26 +54,25 @@ describe('MessageQueue - Size Limit', () => {
       assert.strictEqual(msg.content, `content-${i}`);
     }
 
-    CONFIG.MAX_QUEUE_SIZE = originalMaxSize;
-    queue.clear();
+    await queue.clear();
   });
 
-  it('should drop oldest message when queue is full', () => {
+  it('should drop oldest message when queue is full', async () => {
     const queue = new MessageQueue();
-    queue.clear();
+    await queue.init();
+    await queue.clear();
 
-    const originalMaxSize = CONFIG.MAX_QUEUE_SIZE;
     CONFIG.MAX_QUEUE_SIZE = 3;
 
-    const id1 = queue.enqueue('test', 'target', 'msg1');
-    const id2 = queue.enqueue('test', 'target', 'msg2');
-    const id3 = queue.enqueue('test', 'target', 'msg3');
+    const id1 = await queue.enqueue('test', 'target', 'msg1');
+    const id2 = await queue.enqueue('test', 'target', 'msg2');
+    const id3 = await queue.enqueue('test', 'target', 'msg3');
 
     // Queue is full
     assert.strictEqual(queue.queue.size, 3);
 
     // Add one more - should drop msg1
-    const id4 = queue.enqueue('test', 'target', 'msg4');
+    const id4 = await queue.enqueue('test', 'target', 'msg4');
 
     assert.strictEqual(queue.queue.size, 3);
     assert.strictEqual(queue.getMessage(id1), null); // msg1 dropped
@@ -64,20 +80,19 @@ describe('MessageQueue - Size Limit', () => {
     assert.notStrictEqual(queue.getMessage(id3), null);
     assert.notStrictEqual(queue.getMessage(id4), null);
 
-    CONFIG.MAX_QUEUE_SIZE = originalMaxSize;
-    queue.clear();
+    await queue.clear();
   });
 
-  it('should maintain queue size at limit', () => {
+  it('should maintain queue size at limit', async () => {
     const queue = new MessageQueue();
-    queue.clear();
+    await queue.init();
+    await queue.clear();
 
-    const originalMaxSize = CONFIG.MAX_QUEUE_SIZE;
     CONFIG.MAX_QUEUE_SIZE = 3;
 
     // Add 100 messages - queue should never exceed limit
     for (let i = 0; i < 100; i++) {
-      queue.enqueue('test', 'target', `msg${i}`);
+      await queue.enqueue('test', 'target', `msg${i}`);
       const currentSize = queue.queue.size;
       assert.ok(currentSize <= 3, `Queue size ${currentSize} should not exceed limit after ${i + 1} messages`);
     }
@@ -85,7 +100,6 @@ describe('MessageQueue - Size Limit', () => {
     // Final check: queue should be exactly at limit
     assert.strictEqual(queue.queue.size, 3);
 
-    CONFIG.MAX_QUEUE_SIZE = originalMaxSize;
-    queue.clear();
+    await queue.clear();
   });
 });

@@ -3,10 +3,9 @@
  * Ensures reliable message delivery
  */
 
-import fs from 'fs';
 import {
   OFFLINE_QUEUE_FILE, CONFIG, ErrorCode,
-  ensureDataDir, withLock, readJsonLines, appendJsonLine, generateId, sleep, atomicWriteFileSync
+  ensureDataDirAsync, readJsonLinesAsync, generateId, sleep, atomicWriteFile
 } from '../service/shared.js';
 import { logger } from '../utils/logger.js';
 
@@ -24,6 +23,11 @@ const log = logger.child('message-queue');
  * @property {string} [topic] - Group topic (group message)
  */
 
+// Debounce queue saves to avoid excessive I/O
+const SAVE_DEBOUNCE_MS = 100;
+let pendingSave = null;
+let savePromise = null;
+
 /**
  * Message queue manager
  */
@@ -33,19 +37,27 @@ export class MessageQueue {
     this.queue = new Map();
     this.isProcessing = false;
     this.processInterval = null;
-
-    // Load offline queue
-    this._loadQueue();
+    this.initialized = false;
   }
 
   /**
-   * Load offline queue
+   * Initialize the queue (async version)
+   * Call this before using the queue
    */
-  _loadQueue() {
-    ensureDataDir();
+  async init() {
+    if (this.initialized) return;
+    await this._loadQueue();
+    this.initialized = true;
+  }
+
+  /**
+   * Load offline queue (async version)
+   */
+  async _loadQueue() {
+    await ensureDataDirAsync();
 
     try {
-      const messages = readJsonLines(OFFLINE_QUEUE_FILE);
+      const messages = await readJsonLinesAsync(OFFLINE_QUEUE_FILE);
       const now = Date.now();
 
       for (const msg of messages) {
@@ -64,18 +76,46 @@ export class MessageQueue {
   }
 
   /**
-   * Save queue to file
+   * Save queue to file (async version with debouncing)
    */
-  _saveQueue() {
-    try {
-      const lines = Array.from(this.queue.values())
-        .map(msg => JSON.stringify(msg))
-        .join('\n');
-
-      atomicWriteFileSync(OFFLINE_QUEUE_FILE, lines + (lines ? '\n' : ''));
-    } catch (err) {
-      log.error('Failed to save offline queue', { error: err.message });
+  async _saveQueue() {
+    // If a save is already pending, return that promise
+    if (savePromise) {
+      return savePromise;
     }
+
+    // Clear any pending timeout
+    if (pendingSave) {
+      clearTimeout(pendingSave);
+    }
+
+    // Create a new save promise
+    savePromise = (async () => {
+      try {
+        const lines = Array.from(this.queue.values())
+          .map(msg => JSON.stringify(msg))
+          .join('\n');
+
+        await atomicWriteFile(OFFLINE_QUEUE_FILE, lines + (lines ? '\n' : ''));
+      } catch (err) {
+        log.error('Failed to save offline queue', { error: err.message });
+      } finally {
+        savePromise = null;
+      }
+    })();
+
+    return savePromise;
+  }
+
+  /**
+   * Force immediate save (skip debounce)
+   */
+  async _forceSave() {
+    if (pendingSave) {
+      clearTimeout(pendingSave);
+      pendingSave = null;
+    }
+    await this._saveQueue();
   }
 
   /**
@@ -84,9 +124,14 @@ export class MessageQueue {
    * @param {string} target - Target
    * @param {*} content - Content
    * @param {Object} [options] - Extra options
-   * @returns {string} Message ID
+   * @returns {Promise<string>} Message ID
    */
-  enqueue(type, target, content, options = {}) {
+  async enqueue(type, target, content, options = {}) {
+    // Ensure initialized
+    if (!this.initialized) {
+      await this.init();
+    }
+
     // Check queue size limit before adding
     if (this.queue.size >= CONFIG.MAX_QUEUE_SIZE) {
       // Remove oldest message (FIFO eviction based on createdAt)
@@ -121,7 +166,7 @@ export class MessageQueue {
     };
 
     this.queue.set(id, message);
-    this._saveQueue();
+    await this._saveQueue();
 
     log.debug('Message enqueued', { id, type, target: target.slice(0, 16), queueSize: this.queue.size });
     return id;
@@ -131,9 +176,9 @@ export class MessageQueue {
    * Mark message sent successfully
    * @param {string} id - Message ID
    */
-  markSuccess(id) {
+  async markSuccess(id) {
     if (this.queue.delete(id)) {
-      this._saveQueue();
+      await this._saveQueue();
       log.debug('Message sent successfully', { id });
     }
   }
@@ -142,9 +187,9 @@ export class MessageQueue {
    * Mark message send failed and schedule retry
    * @param {string} id - Message ID
    * @param {string} error - Error message
-   * @returns {boolean} Will retry
+   * @returns {Promise<boolean>} Will retry
    */
-  markFailure(id, error) {
+  async markFailure(id, error) {
     const msg = this.queue.get(id);
     if (!msg) return false;
 
@@ -153,7 +198,7 @@ export class MessageQueue {
     if (msg.retryCount >= CONFIG.MESSAGE_RETRY_COUNT) {
       // Exceeded retry count, remove
       this.queue.delete(id);
-      this._saveQueue();
+      await this._saveQueue();
       log.warn('Message retry exhausted', { id, retryCount: msg.retryCount });
       return false;
     }
@@ -163,7 +208,7 @@ export class MessageQueue {
     msg.nextRetryAt = Date.now() + delay;
     msg.lastError = error;
 
-    this._saveQueue();
+    await this._saveQueue();
     log.info('Message scheduled for retry', { id, retryCount: msg.retryCount, delay });
     return true;
   }
@@ -215,9 +260,9 @@ export class MessageQueue {
 
   /**
    * Clean expired messages
-   * @returns {number} Cleaned message count
+   * @returns {Promise<number>} Cleaned message count
    */
-  cleanExpired() {
+  async cleanExpired() {
     const now = Date.now();
     let cleaned = 0;
 
@@ -229,7 +274,7 @@ export class MessageQueue {
     }
 
     if (cleaned > 0) {
-      this._saveQueue();
+      await this._saveQueue();
       log.info('Cleaned expired messages', { count: cleaned });
     }
 
@@ -248,11 +293,29 @@ export class MessageQueue {
   /**
    * Clear queue
    */
-  clear() {
+  async clear() {
     this.queue.clear();
-    this._saveQueue();
+    await this._saveQueue();
+  }
+
+  /**
+   * Flush any pending saves (for graceful shutdown)
+   */
+  async flush() {
+    if (pendingSave) {
+      clearTimeout(pendingSave);
+      pendingSave = null;
+    }
+    if (savePromise) {
+      await savePromise;
+    }
   }
 }
 
 // Singleton
 export const messageQueue = new MessageQueue();
+
+// Initialize the queue on import
+messageQueue.init().catch(err => {
+  log.error('Failed to initialize message queue', { error: err.message });
+});

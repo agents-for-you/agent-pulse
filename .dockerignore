@@ -1,0 +1,61 @@
+# Node modules (will be reinstalled during build)
+node_modules
+npm-debug.log
+
+# Git files
+.git
+.gitignore
+.gitattributes
+
+# CI/CD
+.github
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test files (not needed in production image)
+test
+*.test.js
+coverage
+
+# Demo files (not needed in production)
+demo
+
+# Documentation (not needed in production image)
+docs
+*.md
+!README.md
+
+# Local development files
+.env
+.env.*
+*.local
+.claude
+
+# Build artifacts
+dist
+build
+
+# Skills directory
+skills
+
+# Data directories (created at runtime)
+.data
+.agent-identity.json
+.agent-contacts.json
+.agent-pulse
+.agent-pulse-key
+
+# Logs
+*.log
+
+# Temporary files
+tmp
+temp

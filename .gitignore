@@ -53,3 +53,6 @@ Thumbs.db
 
 # Skills definitions (auto-generated)
 skills/
+
+# Docker
+.dockerignore.bak

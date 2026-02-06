@@ -3,13 +3,14 @@
  * Provides start/stop/status/send/recv and other features
  */
 import { spawn } from 'child_process';
-import fs from 'fs';
+import { promises as fsPromises } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import {
   DATA_DIR, PID_FILE, MSG_FILE, CMD_FILE, RESULT_FILE, HEALTH_FILE, GROUPS_FILE,
-  CONFIG, ErrorCode,
-  ensureDataDir, withLock, readJsonLines, appendJsonLine, generateId, sleep, safeUnlink
+  CONFIG, ErrorCode, createErrorResponseFromCode,
+  ensureDataDirAsync, withLock, readJsonLinesAsync, appendJsonLineAsync, generateId, sleep, safeUnlinkAsync,
+  fileExistsAsync, readJsonAsync, atomicWriteFile
 } from './shared.js';
 import { groupManager } from './group-manager.js';
 import { messageQueue } from './message-queue.js';
@@ -22,17 +23,19 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // ============ Service status check ============
 
 /**
- * Check if service is running
- * @returns {number|false} PID or false
+ * Check if service is running (async version)
+ * @returns {Promise<number|false>} PID or false
  */
-export function isRunning() {
-  if (!fs.existsSync(PID_FILE)) return false;
+export async function isRunning() {
+  const exists = await fileExistsAsync(PID_FILE);
+  if (!exists) return false;
   try {
-    const pid = parseInt(fs.readFileSync(PID_FILE, 'utf8').trim());
+    const content = await fsPromises.readFile(PID_FILE, 'utf8');
+    const pid = parseInt(content.trim());
     process.kill(pid, 0);
     return pid;
   } catch {
-    safeUnlink(PID_FILE);
+    await safeUnlinkAsync(PID_FILE);
     return false;
   }
 }
@@ -49,12 +52,13 @@ export function isRunning() {
 export async function ensureRunning(options = {}) {
   const { autoStart = true } = options
 
-  if (isRunning()) {
+  const running = await isRunning();
+  if (running) {
     return { ok: true, running: true, autoStarted: false }
   }
 
   if (!autoStart) {
-    return { ok: false, running: false, code: ErrorCode.SERVICE_NOT_RUNNING }
+    return createErrorResponseFromCode(ErrorCode.SERVICE_NOT_RUNNING)
   }
 
   log.info('Service not running, auto-starting...')
@@ -68,11 +72,12 @@ export async function ensureRunning(options = {}) {
  * @returns {Promise<Object>} Start result
  */
 export async function start(options = {}) {
-  if (isRunning()) {
-    return { ok: false, code: ErrorCode.SERVICE_ALREADY_RUNNING };
+  const running = await isRunning();
+  if (running) {
+    return createErrorResponseFromCode(ErrorCode.SERVICE_ALREADY_RUNNING);
   }
 
-  ensureDataDir();
+  await ensureDataDirAsync();
 
   const serverScript = path.join(__dirname, 'worker.js');
   const env = { ...process.env };
@@ -93,13 +98,13 @@ export async function start(options = {}) {
   const startTime = Date.now();
   while (Date.now() - startTime < CONFIG.START_TIMEOUT) {
     await new Promise(r => setTimeout(r, CONFIG.START_POLL_INTERVAL));
-    const pid = isRunning();
+    const pid = await isRunning();
     if (pid) {
       return { ok: true, pid, ephemeral: !!options.ephemeral };
     }
   }
 
-  return { ok: false, code: ErrorCode.SERVICE_START_FAILED };
+  return createErrorResponseFromCode(ErrorCode.SERVICE_START_FAILED);
 }
 
 /**
@@ -107,44 +112,43 @@ export async function start(options = {}) {
  * @returns {Promise<Object>} Stop result
  */
 export async function stop() {
-  const pid = isRunning();
+  const pid = await isRunning();
   if (!pid) {
-    return { ok: false, code: ErrorCode.SERVICE_NOT_RUNNING };
+    return createErrorResponseFromCode(ErrorCode.SERVICE_NOT_RUNNING);
   }
 
   try {
     process.kill(pid, 'SIGTERM');
 
     const start = Date.now();
-    while (Date.now() - start < 2000 && isRunning()) {
-      // Use async wait instead of busy wait
+    while (Date.now() - start < 2000) {
+      const running = await isRunning();
+      if (!running) break;
       await sleep(50);
     }
 
     // Clean up safely
-    safeUnlink(PID_FILE);
+    await safeUnlinkAsync(PID_FILE);
 
     return { ok: true };
   } catch (err) {
-    return { ok: false, code: ErrorCode.SERVICE_STOP_FAILED, error: err.message };
+    return createErrorResponseFromCode(ErrorCode.SERVICE_STOP_FAILED, err.message);
   }
 }
 
 /**
- * Get service status
- * @returns {Object} Status information
+ * Get service status (async version)
+ * @returns {Promise<Object>} Status information
  */
-export function getStatus() {
-  const pid = isRunning();
-  const messages = readMessages(false);
+export async function getStatus() {
+  const pid = await isRunning();
+  const messages = await readMessages(false);
 
   // Read health status
   let health = null;
-  if (fs.existsSync(HEALTH_FILE)) {
-    try {
-      health = JSON.parse(fs.readFileSync(HEALTH_FILE, 'utf8'));
-    } catch {}
-  }
+  try {
+    health = await readJsonAsync(HEALTH_FILE);
+  } catch {}
 
   return {
     running: !!pid,
@@ -157,7 +161,7 @@ export function getStatus() {
 // ============ Message operations ============
 
 /**
- * Read received messages (supports filtering and pagination)
+ * Read received messages (supports filtering and pagination) - async version
  * @param {boolean} clear - Whether to clear
  * @param {Object} [options] - Query options
  * @param {number} [options.limit] - Max return count
@@ -167,10 +171,10 @@ export function getStatus() {
  * @param {number} [options.until] - End timestamp
  * @param {string} [options.search] - Search keyword
  * @param {boolean} [options.isGroup] - Only return group messages
- * @returns {Object} Message list and pagination info
+ * @returns {Promise<Object>} Message list and pagination info
  */
-export function readMessages(clear = false, options = {}) {
-  ensureDataDir();
+export async function readMessages(clear = false, options = {}) {
+  await ensureDataDirAsync();
 
   const { limit, offset = 0, from, since, until, search, isGroup } = options;
 
@@ -219,7 +223,10 @@ export function readMessages(clear = false, options = {}) {
       }
 
       if (clear && messages.length > 0) {
-        fs.writeFileSync(MSG_FILE, '');
+        // Truncate asynchronously
+        fsPromises.writeFile(MSG_FILE, '').catch(err => {
+          log.error(`Failed to truncate message file: ${err.message}`);
+        });
       }
 
       // For simple call (no options), return array for compatibility
@@ -240,7 +247,7 @@ export function readMessages(clear = false, options = {}) {
     });
   } catch {
     // Lock acquisition failed, read directly
-    const messages = readJsonLines(MSG_FILE, true);
+    const messages = await readJsonLinesAsync(MSG_FILE, true);
     if (Object.keys(options).length === 0) {
       return messages;
     }
@@ -262,7 +269,7 @@ export async function sendMessage(targetPubkey, content, options = {}) {
   // Auto-start if not running
   if (!isRunning()) {
     if (!autoStart) {
-      return { ok: false, code: ErrorCode.SERVICE_NOT_RUNNING };
+      return createErrorResponseFromCode(ErrorCode.SERVICE_NOT_RUNNING);
     }
     const started = await ensureRunning()
     if (!started.ok) {
@@ -279,13 +286,13 @@ export async function sendMessage(targetPubkey, content, options = {}) {
       const { decodePublicKey } = await import('../core/nip19.js')
       target = decodePublicKey(targetPubkey)
     } catch (err) {
-      return { ok: false, code: ErrorCode.INVALID_PUBKEY, error: 'Invalid npub format' }
+      return createErrorResponseFromCode(ErrorCode.INVALID_PUBKEY, 'Invalid npub format')
     }
   }
 
   // Validate public key format
   if (!target || !/^[0-9a-f]{64}$/i.test(target)) {
-    return { ok: false, code: ErrorCode.INVALID_PUBKEY };
+    return createErrorResponseFromCode(ErrorCode.INVALID_PUBKEY);
   }
 
   const cmdId = generateId();
@@ -313,31 +320,38 @@ export async function sendMessage(targetPubkey, content, options = {}) {
  * @param {string} cmdId - Command ID
  * @returns {Object|null} Send result
  */
-export function getSendResult(cmdId) {
-  const results = readJsonLines(RESULT_FILE);
+/**
+ * Get send result (async version)
+ * @param {string} cmdId - Command ID
+ * @returns {Promise<Object|null>} Send result
+ */
+export async function getSendResult(cmdId) {
+  const results = await readJsonLinesAsync(RESULT_FILE);
   return results.find(r => r.cmdId === cmdId) || null;
 }
 
 /**
- * Read all send results
+ * Read all send results (async version)
  * @param {boolean} clear - Whether to clear
- * @returns {Array} Result list
+ * @returns {Promise<Array>} Result list
  */
-export function readResults(clear = false) {
-  ensureDataDir();
+export async function readResults(clear = false) {
+  await ensureDataDirAsync();
 
   try {
     return withLock(() => {
       const results = readJsonLines(RESULT_FILE);
 
       if (clear && results.length > 0) {
-        fs.writeFileSync(RESULT_FILE, '');
+        fsPromises.writeFile(RESULT_FILE, '').catch(err => {
+          log.error(`Failed to truncate result file: ${err.message}`);
+        });
       }
 
       return results;
     });
   } catch {
-    return readJsonLines(RESULT_FILE);
+    return await readJsonLinesAsync(RESULT_FILE);
   }
 }
 
@@ -402,7 +416,7 @@ export function joinGroup(groupId, topic, name = '', pubkey = '') {
 export function leaveGroup(groupId, pubkey = '') {
   const group = groupManager.getGroup(groupId);
   if (!group) {
-    return { ok: false, code: ErrorCode.GROUP_NOT_FOUND };
+    return createErrorResponseFromCode(ErrorCode.GROUP_NOT_FOUND);
   }
 
   const topic = group.topic;
@@ -538,12 +552,12 @@ export function getGroupHistory(groupId, options = {}) {
  */
 export function sendGroupMessage(groupId, content, senderPubkey = '') {
   if (!isRunning()) {
-    return { ok: false, code: ErrorCode.SERVICE_NOT_RUNNING };
+    return createErrorResponseFromCode(ErrorCode.SERVICE_NOT_RUNNING);
   }
 
   const group = groupManager.getGroup(groupId);
   if (!group) {
-    return { ok: false, code: ErrorCode.GROUP_NOT_FOUND };
+    return createErrorResponseFromCode(ErrorCode.GROUP_NOT_FOUND);
   }
 
   // Check send permission

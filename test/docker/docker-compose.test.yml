@@ -1,0 +1,116 @@
+version: '3.8'
+
+# Docker Compose configuration for automated testing of AgentPulse
+# This setup is designed for CI/CD pipelines and automated testing scenarios
+
+services:
+  # Test runner service - executes the test suite
+  test-runner:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    container_name: agent-pulse-test-runner
+    volumes:
+      - ../../test:/app/test:ro
+      - test-results:/app/test-results
+      - test-data:/app/.data
+    environment:
+      - NODE_ENV=test
+      - LOG_LEVEL=ERROR
+      - AGENT_PULSE_EPHEMERAL=true
+    networks:
+      - test-network
+    command: ["sh", "-c", "npm test 2>&1 | tee /app/test-results/test-output.log"]
+    depends_on:
+      - test-agent-1
+      - test-agent-2
+      - test-agent-3
+
+  # Agent 1 for testing
+  test-agent-1:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    container_name: agent-pulse-test-1
+    hostname: test-agent-1
+    volumes:
+      - test-data-1:/app/.data
+    environment:
+      - AGENT_PULSE_EPHEMERAL=true
+      - LOG_LEVEL=ERROR
+      - AGENT_NAME=test-agent-1
+      - NODE_ENV=test
+    networks:
+      - test-network
+    healthcheck:
+      test: ["CMD", "sh", "-c", "test -f /app/.data/server.pid && cat /app/.data/server.pid | xargs kill -0 2>/dev/null || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    command: ["sh", "-c", "sleep 1 && node index.js start && tail -f /dev/null"]
+
+  # Agent 2 for testing
+  test-agent-2:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    container_name: agent-pulse-test-2
+    hostname: test-agent-2
+    volumes:
+      - test-data-2:/app/.data
+    environment:
+      - AGENT_PULSE_EPHEMERAL=true
+      - LOG_LEVEL=ERROR
+      - AGENT_NAME=test-agent-2
+      - NODE_ENV=test
+    networks:
+      - test-network
+    healthcheck:
+      test: ["CMD", "sh", "-c", "test -f /app/.data/server.pid && cat /app/.data/server.pid | xargs kill -0 2>/dev/null || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    command: ["sh", "-c", "sleep 1 && node index.js start && tail -f /dev/null"]
+
+  # Agent 3 for testing
+  test-agent-3:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    container_name: agent-pulse-test-3
+    hostname: test-agent-3
+    volumes:
+      - test-data-3:/app/.data
+    environment:
+      - AGENT_PULSE_EPHEMERAL=true
+      - LOG_LEVEL=ERROR
+      - AGENT_NAME=test-agent-3
+      - NODE_ENV=test
+    networks:
+      - test-network
+    healthcheck:
+      test: ["CMD", "sh", "-c", "test -f /app/.data/server.pid && cat /app/.data/server.pid | xargs kill -0 2>/dev/null || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    command: ["sh", "-c", "sleep 1 && node index.js start && tail -f /dev/null"]
+
+networks:
+  test-network:
+    driver: bridge
+    name: agent-pulse-test-network
+
+volumes:
+  test-results:
+    name: agent-pulse-test-results
+  test-data:
+    name: agent-pulse-test-data
+  test-data-1:
+    name: agent-pulse-test-data-1
+  test-data-2:
+    name: agent-pulse-test-data-2
+  test-data-3:
+    name: agent-pulse-test-data-3
